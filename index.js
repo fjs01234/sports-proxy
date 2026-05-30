@@ -5,55 +5,35 @@ const fetch = require("node-fetch");
 const app = express();
 app.use(cors());
 
-const ESPN  = "https://site.api.espn.com/apis/site/v2/sports";
-const ESPN2 = "https://site.web.api.espn.com/apis/v2/sports";
-
-// Health check
 app.get("/", (req, res) => res.json({ status: "ok", message: "Sports proxy live" }));
 
-// Team info + record + roster leaders
-app.get("/team/:sport/:league/:id", async (req, res) => {
-  const { sport, league, id } = req.params;
+// Generic ESPN proxy — pass any ESPN URL path as query param
+// e.g. /espn?path=sports/baseball/mlb/teams/21
+app.get("/espn", async (req, res) => {
+  const path = req.query.path;
+  if (!path) return res.status(400).json({ error: "missing path param" });
+  const url = `https://site.api.espn.com/apis/site/v2/${path}`;
   try {
-    const r = await fetch(`${ESPN}/${sport}/${league}/teams/${id}`);
-    res.json(await r.json());
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    const r = await fetch(url, { headers: { "Accept": "application/json" } });
+    const data = await r.json();
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message, url });
+  }
 });
 
 // Scoreboard
-app.get("/scoreboard/:sport/:league", async (req, res) => {
-  const { sport, league } = req.params;
+app.get("/espn2", async (req, res) => {
+  const path = req.query.path;
+  if (!path) return res.status(400).json({ error: "missing path param" });
+  const url = `https://site.web.api.espn.com/apis/v2/${path}`;
   try {
-    const r = await fetch(`${ESPN}/${sport}/${league}/scoreboard`);
-    res.json(await r.json());
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Standings
-app.get("/standings/:sport/:league", async (req, res) => {
-  const { sport, league } = req.params;
-  try {
-    const r = await fetch(`${ESPN2}/${sport}/${league}/standings`);
-    res.json(await r.json());
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Team roster leaders (top scorers etc)
-app.get("/leaders/:sport/:league", async (req, res) => {
-  const { sport, league } = req.params;
-  try {
-    const r = await fetch(`${ESPN}/${sport}/${league}/leaders`);
-    res.json(await r.json());
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Team schedule (recent + upcoming)
-app.get("/schedule/:sport/:league/:id", async (req, res) => {
-  const { sport, league, id } = req.params;
-  try {
-    const r = await fetch(`${ESPN}/${sport}/${league}/teams/${id}/schedule`);
-    res.json(await r.json());
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    const r = await fetch(url, { headers: { "Accept": "application/json" } });
+    const data = await r.json();
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message, url });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
