@@ -20,31 +20,24 @@ app.get("/espn", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Full team data — team info + coach in one response
+// Team + coach combined
 app.get("/team/:sport/:league/:id", async (req, res) => {
   const { sport, league, id } = req.params;
   const year = new Date().getFullYear();
-
   try {
-    // Fetch team info and coach list in parallel
     const [teamRes, coachRes] = await Promise.all([
       fetch(`${SITE}/sports/${sport}/${league}/teams/${id}`, { headers: { Accept: "application/json" } }),
       fetch(`${CORE}/sports/${sport}/leagues/${league}/seasons/${year}/teams/${id}/coaches`, { headers: { Accept: "application/json" } }),
     ]);
-
     const teamData = await teamRes.json();
     const coachData = await coachRes.json().catch(() => null);
 
-    // Extract head coach from core API
     let headCoach = null;
-    const coachItems = coachData?.items || [];
-    for (const item of coachItems) {
-      // items may be $ref links or inline objects
+    for (const item of (coachData?.items || [])) {
       if (item.firstName || item.fullName) {
         headCoach = item.fullName || `${item.firstName} ${item.lastName}`.trim();
         break;
       }
-      // If it's a $ref, fetch it
       if (item.$ref) {
         try {
           const cr = await fetch(item.$ref, { headers: { Accept: "application/json" } });
@@ -57,13 +50,33 @@ app.get("/team/:sport/:league/:id", async (req, res) => {
       }
     }
 
-    // Inject coach into team response
-    const team = teamData.team || {};
+    const team = teamData.team || teamData || {};
     team._headCoach = headCoach;
     res.json({ team });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Team statistics — the dedicated per-team stats endpoint
+app.get("/stats/:sport/:league/:teamId", async (req, res) => {
+  const { sport, league, teamId } = req.params;
+  const url = `${SITE}/sports/${sport}/${league}/teams/${teamId}/statistics`;
+  try {
+    const r = await fetch(url, { headers: { Accept: "application/json" } });
+    const data = await r.json();
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Roster — names, positions, jersey numbers
+app.get("/roster/:sport/:league/:teamId", async (req, res) => {
+  const { sport, league, teamId } = req.params;
+  const url = `${SITE}/sports/${sport}/${league}/teams/${teamId}/roster`;
+  try {
+    const r = await fetch(url, { headers: { Accept: "application/json" } });
+    res.json(await r.json());
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // News
@@ -80,24 +93,6 @@ app.get("/scoreboard/:sport/:league", async (req, res) => {
   const { sport, league } = req.params;
   try {
     const r = await fetch(`${SITE}/sports/${sport}/${league}/scoreboard`, { headers: { Accept: "application/json" } });
-    res.json(await r.json());
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Roster — returns athlete list (no stats, ESPN doesn't expose season stats on roster)
-app.get("/roster/:sport/:league/:teamId", async (req, res) => {
-  const { sport, league, teamId } = req.params;
-  try {
-    const r = await fetch(`${SITE}/sports/${sport}/${league}/teams/${teamId}/roster`, { headers: { Accept: "application/json" } });
-    res.json(await r.json());
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Leaders — season stat leaders for a team's sport/league (best source for player stats)
-app.get("/leaders/:sport/:league", async (req, res) => {
-  const { sport, league } = req.params;
-  try {
-    const r = await fetch(`${SITE}/sports/${sport}/${league}/leaders`, { headers: { Accept: "application/json" } });
     res.json(await r.json());
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
