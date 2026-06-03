@@ -175,3 +175,54 @@ app.get("/scoreboard/:sport/:league", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`proxy running on ${PORT}`));
+
+// Diagnostic — test all ESPN endpoints for a team and return raw results
+app.get("/diag/:sport/:league/:teamId", async (req, res) => {
+  const { sport, league, teamId } = req.params;
+  const year = new Date().getFullYear();
+  const results = {};
+
+  const tests = [
+    ["v3leaders", `https://site.api.espn.com/apis/site/v3/sports/${sport}/${league}/leaders?season=${year}&seasontype=2`],
+    ["v3leaders_post", `https://site.api.espn.com/apis/site/v3/sports/${sport}/${league}/leaders?season=${year}&seasontype=3`],
+    ["v2stats", `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/teams/${teamId}/statistics`],
+    ["roster", `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/teams/${teamId}/roster`],
+    ["core_athlete_sample", null], // filled below
+  ];
+
+  for (const [name, url] of tests.filter(t => t[1])) {
+    try {
+      const r = await fetch(url, { headers: { Accept: "application/json" } });
+      const d = await r.json();
+      results[name] = {
+        status: r.status,
+        topKeys: Object.keys(d),
+        sample: JSON.stringify(d).slice(0, 400),
+      };
+    } catch(e) { results[name] = { error: e.message }; }
+  }
+
+  // Get first athlete from roster and test stats endpoint
+  try {
+    const rr = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/teams/${teamId}/roster`);
+    const rd = await rr.json();
+    const groups = rd?.athletes || [];
+    const firstAth = groups[0]?.items?.[0]?.athlete || groups[0]?.items?.[0];
+    if (firstAth?.id) {
+      const url = `https://sports.core.api.espn.com/v2/sports/${sport}/leagues/${league}/seasons/${year}/types/3/athletes/${firstAth.id}/statistics/0`;
+      const r = await fetch(url, { headers: { Accept: "application/json" } });
+      const d = await r.json();
+      results["core_athlete"] = {
+        athleteId: firstAth.id,
+        athleteName: firstAth.displayName,
+        status: r.status,
+        topKeys: Object.keys(d),
+        splitsKeys: d.splits ? Object.keys(d.splits) : [],
+        catCount: d.splits?.categories?.length || 0,
+        firstCat: d.splits?.categories?.[0] ? JSON.stringify(d.splits.categories[0]).slice(0, 300) : "none",
+      };
+    }
+  } catch(e) { results["core_athlete"] = { error: e.message }; }
+
+  res.json(results);
+});
