@@ -55,41 +55,58 @@ app.get("/team/:sport/:league/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Player stats — handles offseason by trying current + prior year, multiple season types
+// Player stats — handles offseason, playoffs, and position diversity
 app.get("/players/:sport/:league/:teamId", async (req, res) => {
   const { sport, league, teamId } = req.params;
   const currentYear = new Date().getFullYear();
 
   try {
-    // Get roster first
     const rosterRes = await fetch(`${SITE}/sports/${sport}/${league}/teams/${teamId}/roster`, { headers: { Accept: "application/json" } });
     const rosterData = await rosterRes.json();
 
     const groups = rosterData?.athletes || [];
+
+    // Sample athletes from EACH position group to get diverse roster coverage
+    // (avoids all-pitcher problem for MLB, all-OL for NFL, etc.)
     const allAthletes = [];
     for (const group of groups) {
-      for (const item of (group.items || [])) {
+      const items = group.items || [];
+      const groupPos = group.position || "";
+      // Take up to 3 from each group to ensure diversity
+      let taken = 0;
+      for (const item of items) {
         const ath = item.athlete || item;
         if (ath?.id && ath?.displayName) {
           allAthletes.push({
             id: ath.id,
             name: ath.displayName,
-            pos: ath.position?.abbreviation || group.position || "",
+            pos: ath.position?.abbreviation || groupPos,
             jersey: ath.jersey || "",
+            groupOrder: groups.indexOf(group), // preserve group priority
           });
+          taken++;
+          if (taken >= 3) break;
         }
       }
     }
 
-    // Try season types in order: 2 (regular), 3 (postseason), 1 (preseason)
-    // Try current year first, then prior year (for offseason sports like NFL)
-    const yearsToTry = [currentYear, currentYear - 1];
-    const typesToTry = [2, 3, 1];
+    // For MLB specifically, prioritize hitters (non-pitchers) first
+    let orderedAthletes = allAthletes;
+    if (league === "mlb") {
+      const hitters = allAthletes.filter(a => !["SP","RP","P","CL"].includes(a.pos));
+      const pitchers = allAthletes.filter(a => ["SP","RP","P","CL"].includes(a.pos));
+      orderedAthletes = [...hitters, ...pitchers];
+    }
 
-    const topAthletes = allAthletes.slice(0, 10);
+    // Try season types: for active NBA/NHL playoffs try type 3 first, otherwise type 2 first
+    const isPlayoffSport = ["basketball", "hockey"].includes(sport);
+    const typesToTry = isPlayoffSport ? [3, 2, 1] : [2, 3, 1];
+    const yearsToTry = [currentYear, currentYear - 1];
+
+    const candidates = orderedAthletes.slice(0, 15); // wider net
     const players = [];
 
-    for (const ath of topAthletes) {
+    for (const ath of candidates) {
       let statLines = [];
 
       outerLoop:
@@ -104,17 +121,16 @@ app.get("/players/:sport/:league/:teamId", async (req, res) => {
 
             for (const cat of categories) {
               for (const stat of (cat.stats || [])) {
-                if (!stat.displayValue || stat.displayValue === "0" || stat.displayValue === "--" || stat.displayValue === "0.0") continue;
+                const v = stat.displayValue;
+                if (!v || v === "0" || v === "--" || v === "0.0" || v === "0.00") continue;
                 const label = stat.shortDisplayName || stat.abbreviation || stat.name;
-                const value = stat.displayValue;
-                if (label && value && statLines.length < 4) {
-                  statLines.push({ l: label, v: value });
+                if (label && statLines.length < 4) {
+                  statLines.push({ l: label, v });
                 }
               }
               if (statLines.length >= 4) break;
             }
-
-            if (statLines.length > 0) break outerLoop; // found stats, stop trying
+            if (statLines.length > 0) break outerLoop;
           } catch {}
         }
       }
@@ -122,7 +138,7 @@ app.get("/players/:sport/:league/:teamId", async (req, res) => {
       if (statLines.length > 0) {
         players.push({ ...ath, stats: statLines });
       }
-      if (players.length >= 5) break;
+      if (players.length >= 6) break;
     }
 
     res.json({ players, _rosterCount: allAthletes.length });
