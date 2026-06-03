@@ -55,7 +55,7 @@ app.get("/team/:sport/:league/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Player stats — handles offseason, playoffs, and position diversity
+// Player stats — parallel fetching, all roster members, diverse positions
 app.get("/players/:sport/:league/:teamId", async (req, res) => {
   const { sport, league, teamId } = req.params;
   const currentYear = new Date().getFullYear();
@@ -63,18 +63,13 @@ app.get("/players/:sport/:league/:teamId", async (req, res) => {
   try {
     const rosterRes = await fetch(`${SITE}/sports/${sport}/${league}/teams/${teamId}/roster`, { headers: { Accept: "application/json" } });
     const rosterData = await rosterRes.json();
-
     const groups = rosterData?.athletes || [];
 
-    // Sample athletes from EACH position group to get diverse roster coverage
-    // (avoids all-pitcher problem for MLB, all-OL for NFL, etc.)
+    // Collect ALL athletes from ALL position groups
     const allAthletes = [];
     for (const group of groups) {
-      const items = group.items || [];
       const groupPos = group.position || "";
-      // Take up to 3 from each group to ensure diversity
-      let taken = 0;
-      for (const item of items) {
+      for (const item of (group.items || [])) {
         const ath = item.athlete || item;
         if (ath?.id && ath?.displayName) {
           allAthletes.push({
@@ -82,66 +77,55 @@ app.get("/players/:sport/:league/:teamId", async (req, res) => {
             name: ath.displayName,
             pos: ath.position?.abbreviation || groupPos,
             jersey: ath.jersey || "",
-            groupOrder: groups.indexOf(group), // preserve group priority
           });
-          taken++;
-          if (taken >= 3) break;
         }
       }
     }
 
-    // For MLB specifically, prioritize hitters (non-pitchers) first
-    let orderedAthletes = allAthletes;
+    // For MLB put hitters before pitchers
+    let ordered = allAthletes;
     if (league === "mlb") {
-      const hitters = allAthletes.filter(a => !["SP","RP","P","CL"].includes(a.pos));
-      const pitchers = allAthletes.filter(a => ["SP","RP","P","CL"].includes(a.pos));
-      orderedAthletes = [...hitters, ...pitchers];
+      const hitters  = allAthletes.filter(a => !["SP","RP","P","CL","MR"].includes(a.pos));
+      const pitchers = allAthletes.filter(a =>  ["SP","RP","P","CL","MR"].includes(a.pos));
+      ordered = [...hitters, ...pitchers];
     }
 
-    // Try season types: for active NBA/NHL playoffs try type 3 first, otherwise type 2 first
-    const isPlayoffSport = ["basketball", "hockey"].includes(sport);
-    const typesToTry = isPlayoffSport ? [3, 2, 1] : [2, 3, 1];
-    const yearsToTry = [currentYear, currentYear - 1];
+    // Best season type order per sport
+    const typeOrder = ["basketball","hockey"].includes(sport) ? [3,2,1] : [2,3,1];
 
-    const candidates = orderedAthletes.slice(0, 15); // wider net
-    const players = [];
-
-    for (const ath of candidates) {
-      let statLines = [];
-
-      outerLoop:
-      for (const year of yearsToTry) {
-        for (const type of typesToTry) {
+    // Helper: fetch stats for one athlete trying year/type combos
+    async function fetchStats(ath) {
+      for (const year of [currentYear, currentYear - 1]) {
+        for (const type of typeOrder) {
           try {
             const url = `${CORE}/sports/${sport}/leagues/${league}/seasons/${year}/types/${type}/athletes/${ath.id}/statistics/0`;
-            const r = await fetch(url, { headers: { Accept: "application/json" } });
+            const r = await fetch(url, { headers: { Accept: "application/json" }, timeout: 5000 });
             if (!r.ok) continue;
-            const statData = await r.json();
-            const categories = statData?.splits?.categories || [];
-
-            for (const cat of categories) {
+            const data = await r.json();
+            const cats = data?.splits?.categories || [];
+            const lines = [];
+            for (const cat of cats) {
               for (const stat of (cat.stats || [])) {
                 const v = stat.displayValue;
-                if (!v || v === "0" || v === "--" || v === "0.0" || v === "0.00") continue;
-                const label = stat.shortDisplayName || stat.abbreviation || stat.name;
-                if (label && statLines.length < 4) {
-                  statLines.push({ l: label, v });
-                }
+                if (!v || ["0","--","0.0","0.00"].includes(v)) continue;
+                const l = stat.shortDisplayName || stat.abbreviation || stat.name;
+                if (l && lines.length < 4) lines.push({ l, v });
               }
-              if (statLines.length >= 4) break;
+              if (lines.length >= 4) break;
             }
-            if (statLines.length > 0) break outerLoop;
+            if (lines.length > 0) return { ...ath, stats: lines };
           } catch {}
         }
       }
-
-      if (statLines.length > 0) {
-        players.push({ ...ath, stats: statLines });
-      }
-      if (players.length >= 6) break;
+      return null;
     }
 
-    res.json({ players, _rosterCount: allAthletes.length });
+    // Fetch ALL athletes in parallel (up to 25)
+    const candidates = ordered.slice(0, 25);
+    const results = await Promise.all(candidates.map(fetchStats));
+    const players = results.filter(Boolean);
+
+    res.json({ players, _total: allAthletes.length });
   } catch (e) {
     res.status(500).json({ error: e.message, players: [] });
   }
