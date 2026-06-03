@@ -131,8 +131,30 @@ app.get("/players/:sport/:league/:teamId", async (req, res) => {
   }
 });
 
-// News
-app.get("/news/:sport/:league/:teamId", async (req, res) => {
+// Team season stats (offense/defense/pitching totals)
+app.get("/teamstats/:sport/:league/:teamId", async (req, res) => {
+  const { sport, league, teamId } = req.params;
+  const year = new Date().getFullYear();
+  const results = {};
+  // Try current year type 2, then prior year
+  for (const y of [year, year - 1]) {
+    for (const type of [2, 3]) {
+      try {
+        const url = `${CORE}/sports/${sport}/leagues/${league}/seasons/${y}/types/${type}/teams/${teamId}/statistics`;
+        const r = await fetch(url, { headers: { Accept: "application/json" } });
+        if (!r.ok) continue;
+        const data = await r.json();
+        const cats = data?.splits?.categories || [];
+        if (cats.length === 0) continue;
+        results.categories = cats;
+        results.year = y;
+        results.type = type;
+        return res.json(results);
+      } catch {}
+    }
+  }
+  res.json({ categories: [], year: null });
+});
   const { sport, league, teamId } = req.params;
   try {
     const r = await fetch(`${SITE}/sports/${sport}/${league}/news?team=${teamId}&limit=6`, { headers: { Accept: "application/json" } });
