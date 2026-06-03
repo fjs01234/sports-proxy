@@ -6,18 +6,39 @@ const app = express();
 app.use(cors());
 
 const SITE  = "https://site.api.espn.com/apis/site/v2";
-const SITE3 = "https://site.web.api.espn.com/apis/site/v3";
 const CORE  = "https://sports.core.api.espn.com/v2";
 
 app.get("/", (req, res) => res.json({ status: "ok" }));
 
-// Generic site v2 proxy
+// Generic proxy — fetch any ESPN URL
 app.get("/espn", async (req, res) => {
   const path = req.query.path;
   if (!path) return res.status(400).json({ error: "missing path" });
   try {
     const r = await fetch(`${SITE}/${path}`, { headers: { Accept: "application/json" } });
     res.json(await r.json());
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Debug — show raw ESPN response for any URL
+app.get("/debug", async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: "missing url" });
+  try {
+    const r = await fetch(url, { headers: { Accept: "application/json" } });
+    const data = await r.json();
+    // Return top-level keys + first item sample
+    const topKeys = Object.keys(data);
+    const sample = {};
+    for (const k of topKeys.slice(0, 5)) {
+      const v = data[k];
+      if (typeof v === "object" && v !== null) {
+        sample[k] = Array.isArray(v) ? `[array len=${v.length}, first=${JSON.stringify(v[0]).slice(0,100)}]` : `{keys: ${Object.keys(v).join(",")}}`;
+      } else {
+        sample[k] = v;
+      }
+    }
+    res.json({ status: r.status, topKeys, sample, raw: data });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -49,24 +70,26 @@ app.get("/team/:sport/:league/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Team stats — use the site v2 /statistics endpoint (returns results.splits.categories)
+// Team stats
 app.get("/teamstats/:sport/:league/:teamId", async (req, res) => {
   const { sport, league, teamId } = req.params;
   try {
     const url = `${SITE}/sports/${sport}/${league}/teams/${teamId}/statistics`;
     const r = await fetch(url, { headers: { Accept: "application/json" } });
     const data = await r.json();
-    // ESPN returns: { results: { splits: { categories: [...] } } }
+    // Log all possible paths
     const cats = data?.results?.splits?.categories
                || data?.splits?.categories
                || data?.statistics?.splits?.categories
+               || data?.categories
                || [];
-    const season = data?.season?.year || data?.results?.season?.year || null;
-    res.json({ categories: cats, season });
+    const season = data?.season?.year || data?.results?.season?.year || data?.requestedSeason?.year || null;
+    // Return raw too so frontend can debug
+    res.json({ categories: cats, season, _topKeys: Object.keys(data), _raw: data });
   } catch (e) { res.status(500).json({ error: e.message, categories: [] }); }
 });
 
-// Player stats — parallel fetch across roster
+// Player stats
 app.get("/players/:sport/:league/:teamId", async (req, res) => {
   const { sport, league, teamId } = req.params;
   const currentYear = new Date().getFullYear();
@@ -86,7 +109,6 @@ app.get("/players/:sport/:league/:teamId", async (req, res) => {
       }
     }
 
-    // MLB: hitters first
     let ordered = allAthletes;
     if (league === "mlb") {
       const hitters  = allAthletes.filter(a => !["SP","RP","P","CL","MR"].includes(a.pos));
@@ -94,7 +116,6 @@ app.get("/players/:sport/:league/:teamId", async (req, res) => {
       ordered = [...hitters, ...pitchers];
     }
 
-    // NBA/NHL playoffs: try type 3 first; NFL offseason: try prior year type 2
     const typeOrder = ["basketball","hockey"].includes(sport) ? [3,2,1] : [2,3,1];
     const yearsToTry = [currentYear, currentYear - 1];
 
@@ -126,7 +147,21 @@ app.get("/players/:sport/:league/:teamId", async (req, res) => {
     const candidates = ordered.slice(0, 30);
     const results = await Promise.all(candidates.map(fetchStats));
     const players = results.filter(Boolean);
-    res.json({ players, _total: allAthletes.length });
+
+    // Debug: show first athlete's raw stat response
+    let _debugFirstAthlete = null;
+    if (candidates[0]) {
+      try {
+        const year = currentYear;
+        const type = typeOrder[0];
+        const url = `${CORE}/sports/${sport}/leagues/${league}/seasons/${year}/types/${type}/athletes/${candidates[0].id}/statistics/0`;
+        const r = await fetch(url, { headers: { Accept: "application/json" } });
+        const d = await r.json();
+        _debugFirstAthlete = { url, status: r.status, topKeys: Object.keys(d), splitsKeys: Object.keys(d?.splits||{}), catCount: (d?.splits?.categories||[]).length };
+      } catch(e) { _debugFirstAthlete = { error: e.message }; }
+    }
+
+    res.json({ players, _total: allAthletes.length, _debug: _debugFirstAthlete });
   } catch (e) { res.status(500).json({ error: e.message, players: [] }); }
 });
 
