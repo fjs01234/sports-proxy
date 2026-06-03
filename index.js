@@ -48,23 +48,24 @@ app.get("/team/:sport/:league/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Team stats — v2stats works! Data is at results.stats.splits.categories
-// Also try v3 leaders with NO season param (returns current season)
+// Team stats
 app.get("/teamstats/:sport/:league/:teamId", async (req, res) => {
   const { sport, league, teamId } = req.params;
 
-  // Strategy 1: v3 leaders (no season param = current season)
+  // Strategy 1: v3 leaders — leaders is an OBJECT, use Object.values()
   try {
     const url = `${SITEV3}/sports/${sport}/${league}/leaders`;
     const r = await fetch(url, { headers: { Accept: "application/json" } });
     if (r.ok) {
       const data = await r.json();
-      const leaderCats = data?.leaders || [];
+      // leaders is an object keyed by category, not an array
+      const leadersObj = data?.leaders || {};
+      const leaderCats = Array.isArray(leadersObj) ? leadersObj : Object.values(leadersObj);
       const teamLeaders = [];
       for (const cat of leaderCats) {
         const catName = cat.shortDisplayName || cat.displayName || cat.name || "";
-        for (const entry of (cat.leaders || [])) {
-          // team id can be on entry.team or entry.athlete.team
+        const entries = Array.isArray(cat.leaders) ? cat.leaders : Object.values(cat.leaders || {});
+        for (const entry of entries) {
           const entryTeam = String(entry.team?.id || entry.athlete?.team?.id || "");
           if (entryTeam !== String(teamId)) continue;
           teamLeaders.push({
@@ -82,14 +83,14 @@ app.get("/teamstats/:sport/:league/:teamId", async (req, res) => {
     }
   } catch {}
 
-  // Strategy 2: v2 team statistics — data at results.stats.splits.categories OR results.splits.categories
+  // Strategy 2: v2 team statistics — path is results.stats.categories
   try {
     const url = `${SITE}/sports/${sport}/${league}/teams/${teamId}/statistics`;
     const r = await fetch(url, { headers: { Accept: "application/json" } });
     if (r.ok) {
       const data = await r.json();
-      // From diag: keys are status, results, season, requestedSeason, team
-      const cats = data?.results?.stats?.splits?.categories
+      // From rawcheck: results.stats has keys: id, name, abbreviation, categories
+      const cats = data?.results?.stats?.categories
                || data?.results?.splits?.categories
                || data?.splits?.categories
                || [];
