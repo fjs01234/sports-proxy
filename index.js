@@ -249,3 +249,44 @@ app.get("/diag/:sport/:league/:teamId", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`proxy running on ${PORT}`));
+
+// TEMP: expose raw v3 leaders and v2stats for one team so we can see full structure
+app.get("/rawcheck/:sport/:league/:teamId", async (req, res) => {
+  const { sport, league, teamId } = req.params;
+  const results = {};
+  
+  // v3 leaders - show first 2 leader entries fully
+  try {
+    const r = await fetch(`https://site.api.espn.com/apis/site/v3/sports/${sport}/${league}/leaders`, { headers: {Accept:"application/json"} });
+    const d = await r.json();
+    const leaders = d?.leaders || [];
+    results.v3_total_cats = leaders.length;
+    results.v3_first_cat = leaders[0] ? {
+      name: leaders[0].displayName || leaders[0].name,
+      entryCount: (leaders[0].leaders||[]).length,
+      firstEntry: JSON.stringify(leaders[0].leaders?.[0]).slice(0,400),
+      secondEntry: JSON.stringify(leaders[0].leaders?.[1]).slice(0,400),
+    } : null;
+    // Search all entries for our team
+    let found = 0;
+    for (const cat of leaders) {
+      for (const e of (cat.leaders||[])) {
+        const tid = String(e.team?.id || e.athlete?.team?.id || "");
+        if (tid === String(teamId)) found++;
+      }
+    }
+    results.v3_entries_matching_team = found;
+  } catch(e) { results.v3_error = e.message; }
+
+  // v2stats - show full results structure  
+  try {
+    const r = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/teams/${teamId}/statistics`, { headers: {Accept:"application/json"} });
+    const d = await r.json();
+    results.v2_topKeys = Object.keys(d);
+    results.v2_results_keys = d.results ? Object.keys(d.results) : null;
+    results.v2_results_stats_keys = d.results?.stats ? Object.keys(d.results.stats) : null;
+    results.v2_splits_path = JSON.stringify(d.results?.stats?.splits || d.results?.splits || d.splits || "none").slice(0,500);
+  } catch(e) { results.v2_error = e.message; }
+  
+  res.json(results);
+});
