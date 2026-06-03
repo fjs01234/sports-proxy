@@ -70,23 +70,60 @@ app.get("/team/:sport/:league/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Team stats
+// Team stats — correct ESPN endpoint
 app.get("/teamstats/:sport/:league/:teamId", async (req, res) => {
   const { sport, league, teamId } = req.params;
-  try {
-    const url = `${SITE}/sports/${sport}/${league}/teams/${teamId}/statistics`;
-    const r = await fetch(url, { headers: { Accept: "application/json" } });
-    const data = await r.json();
-    // Log all possible paths
-    const cats = data?.results?.splits?.categories
+  const year = new Date().getFullYear();
+  
+  // Try multiple endpoints in order
+  const endpoints = [
+    // Athletes stats (per-player stats rolled up) — correct endpoint
+    `https://site.web.api.espn.com/apis/site/v2/sports/${sport}/${league}/teams/${teamId}/athletes/statistics?season=${year}`,
+    `https://site.web.api.espn.com/apis/site/v2/sports/${sport}/${league}/teams/${teamId}/athletes/statistics?season=${year - 1}`,
+    // Team-level stats
+    `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/teams/${teamId}/statistics`,
+  ];
+
+  for (const url of endpoints) {
+    try {
+      const r = await fetch(url, { headers: { Accept: "application/json" } });
+      if (!r.ok) continue;
+      const data = await r.json();
+      
+      // Try every possible path ESPN might use
+      const cats = data?.athletes  // athletes/statistics endpoint
+               || data?.results?.splits?.categories
                || data?.splits?.categories
-               || data?.statistics?.splits?.categories
                || data?.categories
                || [];
-    const season = data?.season?.year || data?.results?.season?.year || data?.requestedSeason?.year || null;
-    // Return raw too so frontend can debug
-    res.json({ categories: cats, season, _topKeys: Object.keys(data), _raw: data });
-  } catch (e) { res.status(500).json({ error: e.message, categories: [] }); }
+
+      // If we got athletes array, restructure into categories format
+      if (Array.isArray(cats) && cats.length > 0 && cats[0]?.athlete) {
+        // athletes endpoint: [{athlete, statistics:[{name,displayValue}]}]
+        // Convert to categories format for display
+        const playerStats = cats.slice(0, 10).map(entry => ({
+          name: entry.athlete?.displayName || "",
+          pos: entry.athlete?.position?.abbreviation || "",
+          stats: (entry.statistics || []).filter(s => s.displayValue && !["0","--","0.0","0.00"].includes(s.displayValue)).slice(0, 4).map(s => ({
+            displayName: s.name || s.abbreviation,
+            displayValue: s.displayValue,
+            shortDisplayName: s.shortDisplayName || s.abbreviation || s.name,
+          }))
+        })).filter(p => p.stats.length > 0);
+
+        if (playerStats.length > 0) {
+          return res.json({ categories: [], athletes: playerStats, season: year, _endpoint: url });
+        }
+      }
+
+      if (Array.isArray(cats) && cats.length > 0) {
+        const season = data?.season?.year || data?.results?.season?.year || data?.requestedSeason?.year || year;
+        return res.json({ categories: cats, season, _endpoint: url });
+      }
+    } catch (e) { continue; }
+  }
+
+  res.json({ categories: [], athletes: [], season: null });
 });
 
 // Player stats
