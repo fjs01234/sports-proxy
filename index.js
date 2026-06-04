@@ -48,17 +48,34 @@ app.get("/team/:sport/:league/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Team stats
+// Team stats — v2stats confirmed working, returns results.stats.categories
 app.get("/teamstats/:sport/:league/:teamId", async (req, res) => {
   const { sport, league, teamId } = req.params;
 
-  // Strategy 1: v3 leaders — leaders is an OBJECT, use Object.values()
+  // v2 team statistics — confirmed working from diagnostic
+  // path: results.stats.categories (NBA/NFL) or results.splits.categories (MLB)
+  try {
+    const url = `${SITE}/sports/${sport}/${league}/teams/${teamId}/statistics`;
+    const r = await fetch(url, { headers: { Accept: "application/json" } });
+    if (r.ok) {
+      const data = await r.json();
+      const cats = data?.results?.stats?.categories
+               || data?.results?.splits?.categories
+               || data?.splits?.categories
+               || [];
+      const season = data?.season?.year || data?.requestedSeason?.year || null;
+      if (cats.length > 0) {
+        return res.json({ categories: cats, season, leaders: [], format: "categories" });
+      }
+    }
+  } catch {}
+
+  // Fallback: v3 leaders — leaders is an OBJECT keyed by category
   try {
     const url = `${SITEV3}/sports/${sport}/${league}/leaders`;
     const r = await fetch(url, { headers: { Accept: "application/json" } });
     if (r.ok) {
       const data = await r.json();
-      // leaders is an object keyed by category, not an array
       const leadersObj = data?.leaders || {};
       const leaderCats = Array.isArray(leadersObj) ? leadersObj : Object.values(leadersObj);
       const teamLeaders = [];
@@ -78,25 +95,7 @@ app.get("/teamstats/:sport/:league/:teamId", async (req, res) => {
         }
       }
       if (teamLeaders.length > 0) {
-        return res.json({ leaders: teamLeaders, season: data?.currentSeason?.year || null, format: "leaders" });
-      }
-    }
-  } catch {}
-
-  // Strategy 2: v2 team statistics — path is results.stats.categories
-  try {
-    const url = `${SITE}/sports/${sport}/${league}/teams/${teamId}/statistics`;
-    const r = await fetch(url, { headers: { Accept: "application/json" } });
-    if (r.ok) {
-      const data = await r.json();
-      // From rawcheck: results.stats has keys: id, name, abbreviation, categories
-      const cats = data?.results?.stats?.categories
-               || data?.results?.splits?.categories
-               || data?.splits?.categories
-               || [];
-      const season = data?.season?.year || data?.requestedSeason?.year || null;
-      if (cats.length > 0) {
-        return res.json({ categories: cats, season, format: "categories" });
+        return res.json({ leaders: teamLeaders, categories: [], season: data?.currentSeason?.year || null, format: "leaders" });
       }
     }
   } catch {}
@@ -164,17 +163,73 @@ app.get("/players/:sport/:league/:teamId", async (req, res) => {
             const r = await fetch(url, { headers: { Accept: "application/json" } });
             if (!r.ok) continue;
             const data = await r.json();
-            const lines = [];
+            const allStats = [];
             for (const cat of (data?.splits?.categories || [])) {
               for (const stat of (cat.stats || [])) {
                 const v = stat.displayValue;
                 if (!v || ["0","--","0.0","0.00"].includes(v)) continue;
-                const l = stat.shortDisplayName || stat.abbreviation || stat.name;
-                if (l && lines.length < 4) lines.push({ l, v });
+                allStats.push({ l: stat.shortDisplayName||stat.abbreviation||stat.name, v, name: stat.name, cat: cat.name });
               }
-              if (lines.length >= 4) break;
             }
-            if (lines.length > 0) return { ...ath, stats: lines };
+            if (allStats.length === 0) continue;
+
+            // Pick the most meaningful stats per sport
+            let lines = [];
+            const find = (...names) => allStats.find(s => names.includes(s.name) || names.includes(s.l));
+
+            if (sport === "basketball") {
+              const pts = find("avgPoints","PPG","points");
+              const reb = find("avgRebounds","RPG","rebounds","totalRebounds");
+              const ast = find("avgAssists","APG","assists");
+              const fg  = find("fieldGoalPct","FG%","fieldGoals");
+              if (pts) lines.push({l:"PPG", v: pts.v});
+              if (reb) lines.push({l:"RPG", v: reb.v});
+              if (ast) lines.push({l:"APG", v: ast.v});
+              if (fg)  lines.push({l:"FG%", v: fg.v});
+            } else if (sport === "baseball") {
+              const avg = find("avg","AVG","battingAverage");
+              const hr  = find("homeRuns","HR");
+              const rbi = find("RBIs","RBI","runsBattedIn");
+              const ops = find("OPS","ops","onBasePlusSlugging");
+              const era = find("ERA","era","earnedRunAvg");
+              const so  = find("strikeouts","SO","K");
+              const w   = find("wins","W");
+              if (avg) lines.push({l:"AVG", v: avg.v});
+              if (hr)  lines.push({l:"HR",  v: hr.v});
+              if (rbi) lines.push({l:"RBI", v: rbi.v});
+              if (ops) lines.push({l:"OPS", v: ops.v});
+              if (era) lines.push({l:"ERA", v: era.v});
+              if (so&&!avg)  lines.push({l:"K",  v: so.v});
+              if (w&&!avg)   lines.push({l:"W",  v: w.v});
+            } else if (sport === "football") {
+              const pyds = find("passingYards","PYDS","passYards");
+              const ptd  = find("passingTouchdowns","PTD","passTD");
+              const ryds = find("rushingYards","RYDS","rushYards");
+              const rtd  = find("rushingTouchdowns","RTD");
+              const rec  = find("receptions","REC");
+              const reyds= find("receivingYards","REYDS","recYards");
+              if (pyds) lines.push({l:"PYDS",v:pyds.v});
+              if (ptd)  lines.push({l:"PTD", v:ptd.v});
+              if (ryds) lines.push({l:"RYDS",v:ryds.v});
+              if (rtd)  lines.push({l:"RTD", v:rtd.v});
+              if (rec)  lines.push({l:"REC", v:rec.v});
+              if (reyds)lines.push({l:"REYDS",v:reyds.v});
+            } else if (sport === "hockey") {
+              const g   = find("goals","G");
+              const a   = find("assists","A");
+              const pts = find("points","PTS","totalPoints");
+              const sv  = find("savePct","SV%","savePercentage");
+              const gaa = find("goalsAgainstAverage","GAA");
+              if (g)   lines.push({l:"G",  v:g.v});
+              if (a)   lines.push({l:"A",  v:a.v});
+              if (pts) lines.push({l:"PTS",v:pts.v});
+              if (sv)  lines.push({l:"SV%",v:sv.v});
+              if (gaa) lines.push({l:"GAA",v:gaa.v});
+            }
+
+            // Fallback: just take first 4 non-zero stats if sport-specific picks got nothing
+            if (lines.length === 0) lines = allStats.slice(0, 4);
+            if (lines.length > 0) return { ...ath, stats: lines.slice(0,4) };
           } catch {}
         }
       }
