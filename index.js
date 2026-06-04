@@ -167,69 +167,122 @@ app.get("/players/:sport/:league/:teamId", async (req, res) => {
             for (const cat of (data?.splits?.categories || [])) {
               for (const stat of (cat.stats || [])) {
                 const v = stat.displayValue;
+                const num = parseFloat(v);
+                // Skip: zero, missing, negative, or clearly useless stats
                 if (!v || ["0","--","0.0","0.00"].includes(v)) continue;
+                if (!isNaN(num) && num < 0) continue;
                 allStats.push({ l: stat.shortDisplayName||stat.abbreviation||stat.name, v, name: stat.name, cat: cat.name });
               }
             }
             if (allStats.length === 0) continue;
 
-            // Pick the most meaningful stats per sport
-            let lines = [];
             const find = (...names) => allStats.find(s => names.includes(s.name) || names.includes(s.l));
+            let lines = [];
 
             if (sport === "basketball") {
-              const pts = find("avgPoints","PPG","points");
-              const reb = find("avgRebounds","RPG","rebounds","totalRebounds");
-              const ast = find("avgAssists","APG","assists");
-              const fg  = find("fieldGoalPct","FG%","fieldGoals");
-              if (pts) lines.push({l:"PPG", v: pts.v});
-              if (reb) lines.push({l:"RPG", v: reb.v});
-              if (ast) lines.push({l:"APG", v: ast.v});
-              if (fg)  lines.push({l:"FG%", v: fg.v});
+              const pts = find("avgPoints","pointsPerGame");
+              const reb = find("avgRebounds","reboundsPerGame");
+              const ast = find("avgAssists","assistsPerGame");
+              const fg  = find("fieldGoalPct");
+              if (pts) lines.push({l:"PPG", v:pts.v});
+              if (reb) lines.push({l:"RPG", v:reb.v});
+              if (ast) lines.push({l:"APG", v:ast.v});
+              if (fg)  lines.push({l:"FG%", v:fg.v});
+
             } else if (sport === "baseball") {
-              const avg = find("avg","AVG","battingAverage");
-              const hr  = find("homeRuns","HR");
-              const rbi = find("RBIs","RBI","runsBattedIn");
-              const ops = find("OPS","ops","onBasePlusSlugging");
-              const era = find("ERA","era","earnedRunAvg");
-              const so  = find("strikeouts","SO","K");
-              const w   = find("wins","W");
-              if (avg) lines.push({l:"AVG", v: avg.v});
-              if (hr)  lines.push({l:"HR",  v: hr.v});
-              if (rbi) lines.push({l:"RBI", v: rbi.v});
-              if (ops) lines.push({l:"OPS", v: ops.v});
-              if (era) lines.push({l:"ERA", v: era.v});
-              if (so&&!avg)  lines.push({l:"K",  v: so.v});
-              if (w&&!avg)   lines.push({l:"W",  v: w.v});
+              const isP = ["SP","RP","P","CL","MR"].includes(ath.pos);
+              if (isP) {
+                const era = find("ERA","earnedRunAverage","era");
+                const w   = find("wins","W");
+                const so  = find("strikeouts","SO");
+                const whip= find("WHIP","walksAndHitsPerInningPitched");
+                if (era) lines.push({l:"ERA", v:era.v});
+                if (w)   lines.push({l:"W",   v:w.v});
+                if (so)  lines.push({l:"K",   v:so.v});
+                if (whip)lines.push({l:"WHIP",v:whip.v});
+              } else {
+                const avg = find("avg","battingAverage","AVG");
+                const hr  = find("homeRuns","HR");
+                const rbi = find("RBIs","RBI","runsBattedIn");
+                const ops = find("OPS","onBasePlusSlugging");
+                if (avg) lines.push({l:"AVG", v:avg.v});
+                if (hr)  lines.push({l:"HR",  v:hr.v});
+                if (rbi) lines.push({l:"RBI", v:rbi.v});
+                if (ops) lines.push({l:"OPS", v:ops.v});
+              }
+
             } else if (sport === "football") {
-              const pyds = find("passingYards","PYDS","passYards");
-              const ptd  = find("passingTouchdowns","PTD","passTD");
-              const ryds = find("rushingYards","RYDS","rushYards");
-              const rtd  = find("rushingTouchdowns","RTD");
-              const rec  = find("receptions","REC");
-              const reyds= find("receivingYards","REYDS","recYards");
-              if (pyds) lines.push({l:"PYDS",v:pyds.v});
-              if (ptd)  lines.push({l:"PTD", v:ptd.v});
-              if (ryds) lines.push({l:"RYDS",v:ryds.v});
-              if (rtd)  lines.push({l:"RTD", v:rtd.v});
-              if (rec)  lines.push({l:"REC", v:rec.v});
-              if (reyds)lines.push({l:"REYDS",v:reyds.v});
+              const pos = ath.pos;
+              if (["QB"].includes(pos)) {
+                const pyds = find("passingYards","netPassingYards");
+                const ptd  = find("passingTouchdowns");
+                const cmp  = find("completionPct","completionPercentage");
+                const rate = find("QBRating","passerRating");
+                if (pyds) lines.push({l:"PYDS", v:pyds.v});
+                if (ptd)  lines.push({l:"PTD",  v:ptd.v});
+                if (cmp)  lines.push({l:"CMP%", v:cmp.v});
+                if (rate) lines.push({l:"RTG",  v:rate.v});
+              } else if (["RB","FB"].includes(pos)) {
+                const ryds = find("rushingYards");
+                const rtd  = find("rushingTouchdowns");
+                const ypc  = find("yardsPerRushAttempt","rushingYardsPerCarry");
+                const rec  = find("receptions");
+                if (ryds) lines.push({l:"RYDS", v:ryds.v});
+                if (rtd)  lines.push({l:"RTD",  v:rtd.v});
+                if (ypc)  lines.push({l:"YPC",  v:ypc.v});
+                if (rec)  lines.push({l:"REC",  v:rec.v});
+              } else if (["WR","TE"].includes(pos)) {
+                const rec  = find("receptions");
+                const reyds= find("receivingYards");
+                const retd = find("receivingTouchdowns");
+                const ypr  = find("yardsPerReception","receivingYardsPerReception");
+                if (rec)   lines.push({l:"REC",   v:rec.v});
+                if (reyds) lines.push({l:"REYDS", v:reyds.v});
+                if (retd)  lines.push({l:"RETD",  v:retd.v});
+                if (ypr)   lines.push({l:"YPR",   v:ypr.v});
+              } else if (["DE","DT","LB","OLB","ILB","MLB"].includes(pos)) {
+                const sacks = find("sacks");
+                const tkl   = find("totalTackles","tackles");
+                const tfl   = find("tacklesForLoss");
+                const ff    = find("forcedFumbles");
+                if (sacks) lines.push({l:"SACKS",v:sacks.v});
+                if (tkl)   lines.push({l:"TKL",  v:tkl.v});
+                if (tfl)   lines.push({l:"TFL",  v:tfl.v});
+                if (ff)    lines.push({l:"FF",    v:ff.v});
+              } else if (["CB","S","FS","SS"].includes(pos)) {
+                const int  = find("interceptions","defensiveInterceptions");
+                const pd   = find("passesDefended");
+                const tkl  = find("totalTackles","tackles");
+                if (int) lines.push({l:"INT", v:int.v});
+                if (pd)  lines.push({l:"PD",  v:pd.v});
+                if (tkl) lines.push({l:"TKL", v:tkl.v});
+              }
+              // Skip OL, K, P, LS — they don't have meaningful displayable stats
+
             } else if (sport === "hockey") {
-              const g   = find("goals","G");
-              const a   = find("assists","A");
-              const pts = find("points","PTS","totalPoints");
-              const sv  = find("savePct","SV%","savePercentage");
-              const gaa = find("goalsAgainstAverage","GAA");
-              if (g)   lines.push({l:"G",  v:g.v});
-              if (a)   lines.push({l:"A",  v:a.v});
-              if (pts) lines.push({l:"PTS",v:pts.v});
-              if (sv)  lines.push({l:"SV%",v:sv.v});
-              if (gaa) lines.push({l:"GAA",v:gaa.v});
+              const isG = ath.pos === "G";
+              if (isG) {
+                const sv  = find("savePct","savePercentage","SV%");
+                const gaa = find("goalsAgainstAverage","GAA");
+                const w   = find("wins","W");
+                if (sv)  lines.push({l:"SV%", v:sv.v});
+                if (gaa) lines.push({l:"GAA", v:gaa.v});
+                if (w)   lines.push({l:"W",   v:w.v});
+              } else {
+                const g   = find("goals","G");
+                const a   = find("assists","A");
+                const pts = find("points","PTS");
+                const pm  = find("plusMinus");
+                if (g)   lines.push({l:"G",   v:g.v});
+                if (a)   lines.push({l:"A",   v:a.v});
+                if (pts) lines.push({l:"PTS", v:pts.v});
+                if (pm && parseFloat(pm.v) > 0) lines.push({l:"+/-", v:pm.v});
+              }
             }
 
-            // Fallback: just take first 4 non-zero stats if sport-specific picks got nothing
-            if (lines.length === 0) lines = allStats.slice(0, 4);
-            if (lines.length > 0) return { ...ath, stats: lines.slice(0,4) };
+            // Skip players with no meaningful stats (e.g. OL in NFL)
+            if (lines.length === 0) return null;
+            return { ...ath, stats: lines.slice(0,4) };
           } catch {}
         }
       }
