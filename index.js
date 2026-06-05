@@ -399,3 +399,61 @@ app.get("/rawcheck/:sport/:league/:teamId", async (req, res) => {
   
   res.json(results);
 });
+
+// Game summary / highlights for a team's last game
+app.get("/lastsummary/:sport/:league/:teamId", async (req, res) => {
+  const { sport, league, teamId } = req.params;
+  try {
+    // Get scoreboard to find last game ID
+    const sb = await fetch(`${SITE}/sports/${sport}/${league}/scoreboard`, { headers: { Accept: "application/json" } });
+    const sbData = await sb.json();
+    
+    let gameId = null;
+    let gameData = null;
+    
+    for (const ev of (sbData?.events || [])) {
+      const comp = ev.competitions?.[0];
+      const involved = comp?.competitors?.some(c => String(c.team?.id) === String(teamId));
+      if (involved) { gameId = ev.id; gameData = ev; break; }
+    }
+    
+    if (!gameId) return res.json({ highlights: [], status: "no_game" });
+    
+    // Fetch game summary
+    const sum = await fetch(`${SITE}/sports/${sport}/${league}/summary?event=${gameId}`, { headers: { Accept: "application/json" } });
+    const sumData = await sum.json();
+    
+    // Extract key plays
+    const plays = [];
+    const keyPlayTypes = ["Touchdown", "Home Run", "Three-point", "Field Goal", "Goal", "Score", "Interception", "Sack", "Slam Dunk", "Alley-oop"];
+    
+    for (const period of (sumData?.plays || sumData?.competitions?.[0]?.plays || [])) {
+      const arr = Array.isArray(period) ? period : [period];
+      for (const play of arr) {
+        const text = play?.text || play?.alternativeText || "";
+        if (!text) continue;
+        const isKey = keyPlayTypes.some(k => text.includes(k)) || play?.scoringPlay;
+        if (isKey && plays.length < 5) {
+          plays.push({
+            text,
+            team: play?.team?.displayName || "",
+            score: play?.homeScore !== undefined ? `${play.homeScore}–${play.awayScore}` : null,
+            period: play?.period?.displayValue || "",
+          });
+        }
+      }
+    }
+    
+    // Fallback: get keyMoments from boxscore
+    const keyMoments = sumData?.keyMoments || sumData?.story || [];
+    
+    res.json({ 
+      highlights: plays,
+      keyMoments: keyMoments.slice(0, 4).map(m => m?.text || m?.description || ""),
+      status: sumData?.header?.competitions?.[0]?.status?.type?.completed ? "final" : "live",
+      gameId,
+    });
+  } catch (e) { 
+    res.status(500).json({ error: e.message, highlights: [], keyMoments: [] }); 
+  }
+});
