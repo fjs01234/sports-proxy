@@ -400,60 +400,56 @@ app.get("/rawcheck/:sport/:league/:teamId", async (req, res) => {
   res.json(results);
 });
 
-// Game summary / highlights for a team's last game
+// Game summary / highlights for a team's last COMPLETED game
 app.get("/lastsummary/:sport/:league/:teamId", async (req, res) => {
   const { sport, league, teamId } = req.params;
   try {
-    // Get scoreboard to find last game ID
-    const sb = await fetch(`${SITE}/sports/${sport}/${league}/scoreboard`, { headers: { Accept: "application/json" } });
-    const sbData = await sb.json();
+    // Try current scoreboard first, then yesterday's
+    const dates = [null, (() => { const d=new Date(); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10).replace(/-/g,""); })(), (() => { const d=new Date(); d.setDate(d.getDate()-2); return d.toISOString().slice(0,10).replace(/-/g,""); })()];
     
     let gameId = null;
-    let gameData = null;
-    
-    for (const ev of (sbData?.events || [])) {
-      const comp = ev.competitions?.[0];
-      const involved = comp?.competitors?.some(c => String(c.team?.id) === String(teamId));
-      if (involved) { gameId = ev.id; gameData = ev; break; }
+    let foundEvent = null;
+
+    for (const date of dates) {
+      const url = date
+        ? `${SITE}/sports/${sport}/${league}/scoreboard?dates=${date}`
+        : `${SITE}/sports/${sport}/${league}/scoreboard`;
+      const sb = await fetch(url, { headers: { Accept: "application/json" } }).catch(()=>null);
+      if (!sb?.ok) continue;
+      const sbData = await sb.json();
+      
+      for (const ev of (sbData?.events || [])) {
+        const comp = ev.competitions?.[0];
+        const involved = comp?.competitors?.some(c => String(c.team?.id) === String(teamId));
+        if (!involved) continue;
+        const completed = ev.status?.type?.completed;
+        if (completed) { gameId = ev.id; foundEvent = ev; break; }
+      }
+      if (gameId) break;
     }
-    
-    if (!gameId) return res.json({ highlights: [], status: "no_game" });
-    
+
+    if (!gameId) return res.json({ highlights: [], keyMoments: [], status: "no_completed_game" });
+
     // Fetch game summary
     const sum = await fetch(`${SITE}/sports/${sport}/${league}/summary?event=${gameId}`, { headers: { Accept: "application/json" } });
     const sumData = await sum.json();
-    
-    // Extract key plays
-    const plays = [];
-    const keyPlayTypes = ["Touchdown", "Home Run", "Three-point", "Field Goal", "Goal", "Score", "Interception", "Sack", "Slam Dunk", "Alley-oop"];
-    
-    for (const period of (sumData?.plays || sumData?.competitions?.[0]?.plays || [])) {
-      const arr = Array.isArray(period) ? period : [period];
-      for (const play of arr) {
-        const text = play?.text || play?.alternativeText || "";
-        if (!text) continue;
-        const isKey = keyPlayTypes.some(k => text.includes(k)) || play?.scoringPlay;
-        if (isKey && plays.length < 5) {
-          plays.push({
-            text,
-            team: play?.team?.displayName || "",
-            score: play?.homeScore !== undefined ? `${play.homeScore}–${play.awayScore}` : null,
-            period: play?.period?.displayValue || "",
-          });
-        }
-      }
+
+    // Try keyMoments / story first (ESPN's curated highlights)
+    const keyMoments = (sumData?.keyMoments || sumData?.story || [])
+      .slice(0, 5)
+      .map(m => m?.text || m?.description || m?.headline || "")
+      .filter(Boolean);
+
+    // Fallback: scoring plays from play-by-play
+    const highlights = [];
+    for (const play of (sumData?.plays || [])) {
+      if (!play?.scoringPlay && !play?.text?.match(/touchdown|home run|goal|score|three|slam|dunk/i)) continue;
+      const text = play?.text || play?.alternativeText || "";
+      if (text && highlights.length < 5) highlights.push({ text, score: play?.homeScore !== undefined ? `${play.homeScore}–${play.awayScore}` : null });
     }
-    
-    // Fallback: get keyMoments from boxscore
-    const keyMoments = sumData?.keyMoments || sumData?.story || [];
-    
-    res.json({ 
-      highlights: plays,
-      keyMoments: keyMoments.slice(0, 4).map(m => m?.text || m?.description || ""),
-      status: sumData?.header?.competitions?.[0]?.status?.type?.completed ? "final" : "live",
-      gameId,
-    });
-  } catch (e) { 
-    res.status(500).json({ error: e.message, highlights: [], keyMoments: [] }); 
+
+    res.json({ highlights, keyMoments, status: "final", gameId });
+  } catch (e) {
+    res.status(500).json({ error: e.message, highlights: [], keyMoments: [] });
   }
 });
