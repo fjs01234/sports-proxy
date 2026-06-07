@@ -453,3 +453,136 @@ app.get("/lastsummary/:sport/:league/:teamId", async (req, res) => {
     res.status(500).json({ error: e.message, highlights: [], keyMoments: [] });
   }
 });
+
+// Full game boxscore + leaders for last completed game
+app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
+  const { sport, league, teamId } = req.params;
+  try {
+    // Find last completed game for this team
+    const dates = [
+      null,
+      (() => { const d=new Date(); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10).replace(/-/g,""); })(),
+      (() => { const d=new Date(); d.setDate(d.getDate()-2); return d.toISOString().slice(0,10).replace(/-/g,""); })(),
+      (() => { const d=new Date(); d.setDate(d.getDate()-3); return d.toISOString().slice(0,10).replace(/-/g,""); })(),
+    ];
+
+    let gameId = null;
+    let gameEvent = null;
+
+    for (const date of dates) {
+      const url = date
+        ? `${SITE}/sports/${sport}/${league}/scoreboard?dates=${date}`
+        : `${SITE}/sports/${sport}/${league}/scoreboard`;
+      const sb = await fetch(url, { headers: { Accept: "application/json" } }).catch(()=>null);
+      if (!sb?.ok) continue;
+      const sbData = await sb.json();
+      for (const ev of (sbData?.events || [])) {
+        const comp = ev.competitions?.[0];
+        const involved = comp?.competitors?.some(c => String(c.team?.id) === String(teamId));
+        if (!involved) continue;
+        if (ev.status?.type?.completed) { gameId = ev.id; gameEvent = ev; break; }
+      }
+      if (gameId) break;
+    }
+
+    if (!gameId) return res.json({ found: false });
+
+    // Fetch full summary
+    const sumRes = await fetch(`${SITE}/sports/${sport}/${league}/summary?event=${gameId}`, { headers: { Accept: "application/json" } });
+    const sum = await sumRes.json();
+
+    // Extract boxscore - batting and pitching leaders
+    const boxscore = sum?.boxscore || {};
+    const players = boxscore?.players || [];
+
+    const teamStats = [];
+    for (const teamBlock of players) {
+      const tName = teamBlock?.team?.displayName || "";
+      const tAbbr = teamBlock?.team?.abbreviation || "";
+      const isNYM = tAbbr === "NYM" || String(teamBlock?.team?.id) === String(teamId);
+      const stats = teamBlock?.statistics || [];
+
+      const hitters = [];
+      const pitchers = [];
+
+      for (const statGroup of stats) {
+        const type = statGroup?.name || "";
+        const athletes = statGroup?.athletes || [];
+        const keys = statGroup?.keys || [];
+        const labels = statGroup?.labels || statGroup?.shortLabels || keys;
+
+        for (const ath of athletes) {
+          const name = ath?.athlete?.displayName || "";
+          const pos = ath?.athlete?.position?.abbreviation || "";
+          const vals = ath?.stats || [];
+          if (!name || !vals.length) continue;
+
+          const statMap = {};
+          keys.forEach((k, i) => { if (vals[i] && vals[i] !== "--") statMap[k] = vals[i]; });
+
+          if (type === "batting" || type.includes("batting")) {
+            const ab = statMap["AB"] || statMap["atBats"];
+            const h  = statMap["H"] || statMap["hits"];
+            const hr = statMap["HR"] || statMap["homeRuns"];
+            const rbi= statMap["RBI"] || statMap["runsBattedIn"];
+            const bb = statMap["BB"] || statMap["walks"];
+            const avg= statMap["AVG"] || statMap["avg"];
+            if (ab || h) {
+              let line = `${name}`;
+              if (h && ab) line += ` ${h}-${ab}`;
+              if (hr && hr !== "0") line += ` HR`;
+              if (rbi && rbi !== "0") line += ` ${rbi} RBI`;
+              if (bb && bb !== "0") line += ` BB`;
+              hitters.push({ name, line, isNYM });
+            }
+          } else if (type === "pitching" || type.includes("pitching")) {
+            const ip  = statMap["IP"] || statMap["inningsPitched"];
+            const er  = statMap["ER"] || statMap["earnedRuns"];
+            const so  = statMap["K"] || statMap["SO"] || statMap["strikeouts"];
+            const bb  = statMap["BB"] || statMap["walks"];
+            const dec = statMap["note"] || ath?.athlete?.note || "";
+            if (ip) {
+              let line = `${name} ${ip} IP`;
+              if (er !== undefined && er !== "--") line += ` ${er} ER`;
+              if (so && so !== "0") line += ` ${so} K`;
+              if (bb && bb !== "0") line += ` ${bb} BB`;
+              if (dec) line += ` (${dec})`;
+              pitchers.push({ name, line, isNYM });
+            }
+          }
+        }
+      }
+      teamStats.push({ tName, tAbbr, isNYM, hitters, pitchers });
+    }
+
+    // Key moments and scoring plays
+    const keyMoments = (sum?.keyMoments || sum?.story || [])
+      .slice(0, 5).map(m => m?.text || m?.description || "").filter(Boolean);
+
+    // Scoring plays from play by play
+    const scoringPlays = (sum?.plays || [])
+      .filter(p => p?.scoringPlay)
+      .slice(0, 8)
+      .map(p => ({ text: p?.text || "", score: p?.homeScore !== undefined ? `${p.awayScore}-${p.homeScore}` : "" }));
+
+    // Game info
+    const comp = gameEvent?.competitions?.[0];
+    const home = comp?.competitors?.find(c => c.homeAway === "home");
+    const away = comp?.competitors?.find(c => c.homeAway === "away");
+    const venue = comp?.venue?.fullName || "";
+    const attendance = comp?.attendance || "";
+    const gameDate = gameEvent?.date || "";
+
+    res.json({
+      found: true, gameId,
+      home: { name: home?.team?.displayName, abbr: home?.team?.abbreviation, score: home?.score },
+      away: { name: away?.team?.displayName, abbr: away?.team?.abbreviation, score: away?.score },
+      venue, attendance, gameDate,
+      teamStats, keyMoments, scoringPlays,
+      status: gameEvent?.status?.type?.description || "Final"
+    });
+
+  } catch(e) {
+    res.status(500).json({ error: e.message, found: false });
+  }
+});
