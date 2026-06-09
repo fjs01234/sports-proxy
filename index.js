@@ -300,8 +300,17 @@ app.get("/players/:sport/:league/:teamId", async (req, res) => {
 app.get("/news/:sport/:league/:teamId", async (req, res) => {
   const { sport, league, teamId } = req.params;
   try {
-    const r = await fetch(`${SITE}/sports/${sport}/${league}/news?team=${teamId}&limit=6`, { headers: { Accept: "application/json" } });
-    res.json(await r.json());
+    const r = await fetch(`${SITE}/sports/${sport}/${league}/news?team=${teamId}&limit=10`, { headers: { Accept: "application/json" } });
+    const data = await r.json();
+    // Enrich articles with parsed published date and type info, pass through fully
+    const articles = (data.articles || []).map(a => ({
+      ...a,
+      _published: a.published || a.lastModified || null,
+      _type: a.type || a.categories?.[0]?.description || "unknown",
+      _isPreview: /preview|matchup|vs\.|projections|odds|betting|how to watch/i.test(a.headline || ""),
+      _isRecap: /recap|final|highlights|game wrap|series|wins|beats|defeats|shutout|walk.off/i.test(a.headline || ""),
+    }));
+    res.json({ ...data, articles });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
