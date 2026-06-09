@@ -307,8 +307,8 @@ app.get("/news/:sport/:league/:teamId", async (req, res) => {
       ...a,
       _published: a.published || a.lastModified || null,
       _type: a.type || a.categories?.[0]?.description || "unknown",
-      _isPreview: /preview|matchup|vs\.|projections|odds|betting|how to watch/i.test(a.headline || ""),
-      _isRecap: /recap|final|highlights|game wrap|series|wins|beats|defeats|shutout|walk.off/i.test(a.headline || ""),
+      _isPreview: /preview|matchup|vs\.|projections|odds|betting|how to watch|keys to|play to determine|series winner|series finale|series opener|starting lineup|pitching matchup/i.test(a.headline || "") || /^[\w ]+ vs\.? [\w ]+$/i.test((a.headline || "").trim()),
+      _isRecap: /recap|final score|highlights|game wrap|series win|clinch|wins|beats|defeats|shutout|walk.off|homer|home run|rbi|goes \d-for|hit game|no-hitter|comeback|took the series/i.test(a.headline || ""),
     }));
     res.json({ ...data, articles });
   } catch (e) { res.status(500).json({ error: e.message }); }
