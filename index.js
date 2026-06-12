@@ -504,12 +504,32 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
     const boxscore = sum?.boxscore || {};
     const players = boxscore?.players || [];
 
+    // boxscore.teams[] has team-level R/H/E stats
+    const teamRHE = {};
+    for (const tb of (boxscore?.teams || [])) {
+      const abbr = tb?.team?.abbreviation || "";
+      const stats = tb?.statistics || [];
+      const getStat = (...names) => {
+        for (const n of names) {
+          const s = stats.find(x => x.name === n || x.abbreviation === n || x.label === n);
+          if (s) return s.displayValue ?? String(s.value ?? "?");
+        }
+        return "?";
+      };
+      teamRHE[abbr] = {
+        R: getStat("runs","R","runsScored"),
+        H: getStat("hits","H"),
+        E: getStat("errors","E","0")
+      };
+    }
+
     const teamStats = [];
     for (const teamBlock of players) {
       const tName = teamBlock?.team?.displayName || "";
       const tAbbr = teamBlock?.team?.abbreviation || "";
       const isNYM = tAbbr === "NYM" || String(teamBlock?.team?.id) === String(teamId);
       const stats = teamBlock?.statistics || [];
+      const rhe = teamRHE[tAbbr] || { R:"?", H:"?", E:"0" };
 
       const hitters = [];
       const pitchers = [];
@@ -561,7 +581,7 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
           }
         }
       }
-      teamStats.push({ tName, tAbbr, isNYM, hitters, pitchers });
+      teamStats.push({ tName, tAbbr, isNYM, hitters, pitchers, R: rhe.R, H: rhe.H, E: rhe.E });
     }
 
     // Key moments and scoring plays
