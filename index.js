@@ -938,6 +938,20 @@ app.get("/googlenews/:query", async (req, res) => {
 });
 
 
+// Scoreboard with optional date filter
+app.get("/scoreboard/:sport/:league", async (req, res) => {
+  const { sport, league } = req.params;
+  const dates = req.query.dates || '';
+  try {
+    const url = dates
+      ? `${SITE}/sports/${sport}/${league}/scoreboard?dates=${dates}`
+      : `${SITE}/sports/${sport}/${league}/scoreboard`;
+    const r = await fetch(url, { headers: { Accept: "application/json" } });
+    res.json(await r.json());
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`proxy running on ${PORT}`));
 
