@@ -537,8 +537,9 @@ app.get("/mlbinjuries/:teamSlug", async (req, res) => {
     const months = /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+$/;
     let txDate = '';
 
-    for (const block of allBlocks) {
-      const t = block.trim();
+    for (const rawBlock of allBlocks) {
+      // Strip HTML tags like <forge-entity>...</forge-entity> but keep text content
+      const t = rawBlock.replace(/<[^>]+>/g, '').trim();
       if (/LATEST INJURIES/i.test(t))     { inInjuries = true; inTransactions = false; continue; }
       if (/LATEST TRANSACTIONS/i.test(t)) { inInjuries = false; inTransactions = true; continue; }
       if (/More from MLB/i.test(t))        { inInjuries = false; inTransactions = false; continue; }
