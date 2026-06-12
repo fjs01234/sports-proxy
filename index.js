@@ -519,42 +519,48 @@ app.get("/mlbinjuries/:teamSlug", async (req, res) => {
     const injuries = [];
     const transactions = [];
 
-    // Find injury section
-    const injStart = normalized.search(/LATEST INJURIES/i);
-    const txStart  = normalized.search(/LATEST TRANSACTIONS/i);
-    const injText  = injStart >= 0
-      ? normalized.slice(injStart, txStart > injStart ? txStart : injStart + 6000)
-      : '';
-
-    // Parse injury blocks -- each starts with a position abbreviation + name
-    const injLines = injText.split('\n').map(l => l.trim()).filter(Boolean);
-    let current = null;
-    for (const line of injLines) {
-      const posName = line.match(/^(RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+(.+)/);
-      if (posName) {
-        if (current?.name && current?.injury) injuries.push(current);
-        current = { pos: posName[1], name: posName[2].trim(), injury: '', expectedReturn: 'TBD' };
-        continue;
+    // MLB.com stores content as JSON-encoded strings in __typename:Markdown blocks
+    // Each injury/transaction is a separate content block with \n as literal \\n
+    const contentRe = /"__typename"\s*:\s*"Markdown"[^}]{0,50}"content"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+    const allBlocks = [];
+    let cm;
+    while ((cm = contentRe.exec(html)) !== null) {
+      try {
+        allBlocks.push(JSON.parse('"' + cm[1] + '"'));
+      } catch {
+        allBlocks.push(cm[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'));
       }
-      if (!current) continue;
-      const injM = line.match(/\*\*Injury:\*\*\s*(.+)/i) || line.match(/^Injury:\s*(.+)/i);
-      const retM = line.match(/\*\*Expected return:\*\*\s*(.+)/i) || line.match(/^Expected return:\s*(.+)/i);
-      if (injM) current.injury = injM[1].replace(/\*+/g,'').trim();
-      if (retM) current.expectedReturn = retM[1].replace(/\*+/g,'').trim();
     }
-    if (current?.name && current?.injury) injuries.push(current);
 
-    // Parse transactions
-    const txText = txStart >= 0 ? normalized.slice(txStart, txStart + 3000) : '';
-    const txLines = txText.split('\n').map(l => l.trim()).filter(Boolean);
-    let currentDate = '';
-    for (const line of txLines) {
-      const dateM = line.match(/^\*\*((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+)\*\*$/)
-                 || line.match(/^((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+)$/);
-      if (dateM) { currentDate = dateM[1]; continue; }
-      if (currentDate && (line.startsWith('•') || line.startsWith('-') || /^[A-Z]{1,3}\s/.test(line))) {
-        const clean = line.replace(/^[•\-\s]+/, '').replace(/\*+/g, '').trim();
-        if (clean.length > 5) transactions.push({ date: currentDate, move: clean });
+    // Find which blocks are in injury vs transaction section
+    let inInjuries = false, inTransactions = false;
+    const months = /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+$/;
+    let txDate = '';
+
+    for (const block of allBlocks) {
+      const t = block.trim();
+      if (/LATEST INJURIES/i.test(t))     { inInjuries = true; inTransactions = false; continue; }
+      if (/LATEST TRANSACTIONS/i.test(t)) { inInjuries = false; inTransactions = true; continue; }
+      if (/More from MLB/i.test(t))        { inInjuries = false; inTransactions = false; continue; }
+
+      if (inInjuries) {
+        const nameM = t.match(/^(RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+([A-Za-z][A-Za-z .'-]+)/);
+        if (!nameM) continue;
+        const pos  = nameM[1];
+        const name = nameM[2].trim();
+        const injM = t.match(/\*\*Injury:\*\*\s*([^\n*]{4,120})/i);
+        const retM = t.match(/\*\*Expected return:\*\*\s*([^\n*]{2,60})/i);
+        const injury = injM?.[1]?.replace(/\*+$/,'').trim() || '';
+        const ret    = retM?.[1]?.replace(/\*+$/,'').trim() || 'TBD';
+        if (name && injury) injuries.push({ name, pos, injury, expectedReturn: ret });
+      }
+
+      if (inTransactions) {
+        if (months.test(t)) { txDate = t; continue; }
+        if (txDate && (t.startsWith('•') || /Recalled|Optioned|Activated|Placed|Designated|Transferred|Selected|Released/i.test(t))) {
+          const clean = t.replace(/^[•·\s]+/,'').replace(/\[([^\]]+)\]\([^)]+\)/g,'$1').replace(/\*+/g,'').trim();
+          if (clean.length > 5) transactions.push({ date: txDate, move: clean });
+        }
       }
     }
 
