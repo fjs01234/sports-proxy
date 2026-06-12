@@ -577,8 +577,19 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
       const hitters = [], pitchers = [];
 
       for (const statGroup of (teamBlock?.statistics || [])) {
-        const type = (statGroup?.name || "").toLowerCase();
+        // ESPN uses "type" not "name" for stat group identification
+        const type = (statGroup?.type || statGroup?.name || "").toLowerCase();
         const keys = statGroup?.keys || [];
+        const totals = statGroup?.totals || [];
+
+        // R/H/E from totals array (parallel to keys)
+        if (type === "batting" && totals.length) {
+          const hIdx = keys.indexOf("hits");
+          const rIdx = keys.indexOf("runs");
+          if (hIdx >= 0 && totals[hIdx]) teamRHE[tAbbr].H = totals[hIdx];
+          if (rIdx >= 0 && totals[rIdx] && teamRHE[tAbbr].R === "?") teamRHE[tAbbr].R = totals[rIdx];
+        }
+
         for (const ath of (statGroup?.athletes || [])) {
           const name = ath?.athlete?.displayName || "";
           const vals = ath?.stats || [];
@@ -588,10 +599,9 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
 
           if (type === "batting") {
             const hab = sm["hits-atBats"] || "";
-            const ab  = sm["atBats"]; const h = sm["hits"];
             const hr  = sm["homeRuns"]; const rbi = sm["RBIs"]; const bb = sm["walks"];
-            if (hab || ab != null) {
-              let line = `${name}: ${hab || h+"-"+ab}`;
+            if (hab) {
+              let line = `${name}: ${hab}`;
               if (hr && hr !== "0") line += `, ${hr} HR`;
               if (rbi && rbi !== "0") line += `, ${rbi} RBI`;
               if (bb && bb !== "0") line += `, BB`;
@@ -611,19 +621,6 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
               if (dec) line += ` [${dec}]`;
               pitchers.push({ name, line });
             }
-          }
-        }
-
-        // Sum H from batting athletes if linescore missing
-        if (type === "batting" && teamRHE[tAbbr]?.H === "?") {
-          const hIdx = keys.indexOf("hits");
-          if (hIdx >= 0) {
-            let totalH = 0;
-            for (const ath of (statGroup.athletes || [])) {
-              const v = parseInt(ath?.stats?.[hIdx]);
-              if (!isNaN(v)) totalH += v;
-            }
-            if (totalH > 0) teamRHE[tAbbr].H = String(totalH);
           }
         }
       }
