@@ -907,6 +907,37 @@ app.get("/mlbrss/:teamSlug", async (req, res) => {
 });
 
 
+// Google News RSS for Mets
+app.get("/googlenews/:query", async (req, res) => {
+  const query = encodeURIComponent(req.params.query.replace(/-/g, ' '));
+  try {
+    const r = await fetch(
+      `https://news.google.com/rss/search?q=${query}&hl=en-US&gl=US&ceid=US:en`,
+      { headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/rss+xml, text/xml" } }
+    );
+    if (!r.ok) return res.json({ articles: [] });
+    const xml = await r.text();
+    const articles = [];
+    const itemRe = /<item>([\s\S]*?)<\/item>/g;
+    let m;
+    while ((m = itemRe.exec(xml)) !== null) {
+      const item = m[1];
+      const title   = item.match(/<title>([\s\S]*?)<\/title>/)?.[1]?.replace(/<!\[CDATA\[|\]\]>/g,'').replace(/<[^>]+>/g,'').trim() || '';
+      const desc    = item.match(/<description>([\s\S]*?)<\/description>/)?.[1]?.replace(/<!\[CDATA\[|\]\]>/g,'').replace(/<[^>]+>/g,'').trim() || '';
+      const pubDate = item.match(/<pubDate>(.*?)<\/pubDate>/)?.[1] || '';
+      // Strip source suffix like " - ESPN" from title
+      const headline = title.replace(/\s+-\s+[^-]+$/, '').trim();
+      if (headline && headline.length > 10) articles.push({
+        headline,
+        description: desc.slice(0, 200),
+        _published: pubDate ? new Date(pubDate).toISOString() : '',
+      });
+    }
+    res.json({ articles: articles.slice(0, 8) });
+  } catch(e) { res.json({ articles: [] }); }
+});
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`proxy running on ${PORT}`));
 
