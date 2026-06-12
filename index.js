@@ -389,19 +389,24 @@ app.get("/boxdebug/:sport/:league/:teamId", async (req, res) => {
     const sumRes = await fetch(`${SITE}/sports/${sport}/${league}/summary?event=${gameId}`, { headers: { Accept: "application/json" } });
     const sum = await sumRes.json();
     const teams = sum?.boxscore?.teams || [];
-    const debug = teams.map(t => ({
+    // Show players[] structure - where actual athlete data lives
+    const players = sum?.boxscore?.players || [];
+    const debug = players.map(t => ({
       abbr: t?.team?.abbreviation,
       statGroups: (t?.statistics || []).map(s => ({
         name: s.name,
-        keys: s.keys,
-        totals: s.totals,
+        keys: s.keys?.slice(0,10),
         firstAthlete: s.athletes?.[0] ? {
           name: s.athletes[0]?.athlete?.displayName,
-          stats: s.athletes[0]?.stats
+          stats: s.athletes[0]?.stats?.slice(0,10)
+        } : null,
+        lastAthlete: s.athletes?.length > 1 ? {
+          name: s.athletes[s.athletes.length-1]?.athlete?.displayName,
+          stats: s.athletes[s.athletes.length-1]?.stats?.slice(0,10)
         } : null
       }))
     }));
-    res.json({ gameId, teamsCount: teams.length, debug });
+    res.json({ gameId, teamsCount: teams.length, playersCount: players.length, debug });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -544,32 +549,31 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
     // Extract boxscore
     const boxscore = sum?.boxscore || {};
 
-    // R/H/E: read from the home/away competitor scores + hits/errors from boxscore.teams statistics
-    // ESPN stores R as the competitor score; H and E are in boxscore.teams[].statistics
+    // R = competitor score; H and E come from the last row of boxscore.players batting/fielding
+    // ESPN puts team totals as the LAST athlete entry in each stat group (name = team name)
     const teamRHE = {};
 
-    // Get R directly from the scoreboard competitor scores we already have
-    const homeAbbr = comp?.competitors?.find(c => c.homeAway === "home")?.team?.abbreviation;
-    const awayAbbr = comp?.competitors?.find(c => c.homeAway === "away")?.team?.abbreviation;
-    const homeScore = comp?.competitors?.find(c => c.homeAway === "home")?.score;
-    const awayScore = comp?.competitors?.find(c => c.homeAway === "away")?.score;
-    if (homeAbbr) teamRHE[homeAbbr] = { R: homeScore ?? "?", H: "?", E: "0" };
-    if (awayAbbr) teamRHE[awayAbbr] = { R: awayScore ?? "?", H: "?", E: "0" };
+    // Seed R from competitor scores
+    for (const competitor of (comp?.competitors || [])) {
+      const abbr = competitor?.team?.abbreviation;
+      if (abbr) teamRHE[abbr] = { R: competitor.score ?? "?", H: "?", E: "0" };
+    }
 
-    // Get H and E from boxscore.teams[].statistics totals
-    for (const tb of (boxscore?.teams || [])) {
-      const abbr = tb?.team?.abbreviation || "";
+    // Get H and E from boxscore.players -- last athlete in batting group is team totals
+    for (const teamBlock of (boxscore?.players || [])) {
+      const abbr = teamBlock?.team?.abbreviation || "";
       if (!teamRHE[abbr]) teamRHE[abbr] = { R: "?", H: "?", E: "0" };
-      for (const grp of (tb?.statistics || [])) {
+      for (const grp of (teamBlock?.statistics || [])) {
         const keys = grp?.keys || [];
-        // totals is a parallel array to keys with team aggregate values
-        const totals = grp?.totals || [];
-        if (!totals.length) continue;
+        const athletes = grp?.athletes || [];
+        if (!athletes.length || !keys.length) continue;
+        // Last athlete row is often the team totals
+        const totalsRow = athletes[athletes.length - 1];
+        const vals = totalsRow?.stats || [];
         const statMap = {};
-        keys.forEach((k, i) => { if (totals[i] != null) statMap[k] = totals[i]; });
+        keys.forEach((k, i) => { if (vals[i] != null && vals[i] !== "--") statMap[k] = vals[i]; });
         if (grp.name === "batting") {
           if (statMap["H"]) teamRHE[abbr].H = statMap["H"];
-          if (statMap["R"]) teamRHE[abbr].R = statMap["R"]; // override with actual runs
         }
         if (grp.name === "fielding") {
           if (statMap["E"] != null) teamRHE[abbr].E = statMap["E"];
