@@ -589,7 +589,6 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
       const tName = teamBlock?.team?.displayName || "";
       const tAbbr = teamBlock?.team?.abbreviation || "";
       const isNYM = tAbbr === "NYM" || String(teamBlock?.team?.id) === String(teamId);
-      const rhe = teamRHE[tAbbr] || { R:"?", H:"?", E:"0" };
       const hitters = [];
       const pitchers = [];
 
@@ -640,33 +639,35 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
       }
       // H from batting: sum hits column across all batters
       const battingGroup = (teamBlock?.statistics || []).find(s => s.name === "batting");
-      if (battingGroup) {
-        const keys = battingGroup.keys || [];
-        const hIdx = keys.indexOf("hits");
+      if (battingGroup && teamRHE[tAbbr]) {
+        const bkeys = battingGroup.keys || [];
+        const hIdx = bkeys.indexOf("hits");
         if (hIdx >= 0) {
           let totalH = 0;
           for (const ath of (battingGroup.athletes || [])) {
             const v = parseInt(ath?.stats?.[hIdx]);
             if (!isNaN(v)) totalH += v;
           }
-          if (totalH > 0) teamRHE[abbr].H = String(totalH);
+          if (totalH > 0) teamRHE[tAbbr].H = String(totalH);
         }
       }
       // E from fielding group if present
       const fieldingGroup = (teamBlock?.statistics || []).find(s => s.name === "fielding");
-      if (fieldingGroup) {
-        const keys = fieldingGroup.keys || [];
-        const eIdx = keys.indexOf("errors");
+      if (fieldingGroup && teamRHE[tAbbr]) {
+        const fkeys = fieldingGroup.keys || [];
+        const eIdx = fkeys.indexOf("errors");
         if (eIdx >= 0) {
           let totalE = 0;
           for (const ath of (fieldingGroup.athletes || [])) {
             const v = parseInt(ath?.stats?.[eIdx]);
             if (!isNaN(v)) totalE += v;
           }
-          teamRHE[abbr].E = String(totalE);
+          teamRHE[tAbbr].E = String(totalE);
         }
       }
-      teamStats.push({ tName, tAbbr, isNYM, hitters, pitchers, R: rhe.R, H: rhe.H, E: rhe.E });
+      // Read updated RHE after computing H and E
+      const finalRhe = teamRHE[tAbbr] || { R:"?", H:"?", E:"0" };
+      teamStats.push({ tName, tAbbr, isNYM, hitters, pitchers, R: finalRhe.R, H: finalRhe.H, E: finalRhe.E });
     }
 
     // Key moments and scoring plays
