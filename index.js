@@ -554,7 +554,8 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
     const teamRHE = {};
 
     // Seed R from competitor scores
-    for (const competitor of (comp?.competitors || [])) {
+    const compForRHE = gameEvent?.competitions?.[0];
+    for (const competitor of (compForRHE?.competitors || [])) {
       const abbr = competitor?.team?.abbreviation;
       if (abbr) teamRHE[abbr] = { R: competitor.score ?? "?", H: "?", E: "0" };
     }
