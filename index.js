@@ -482,128 +482,141 @@ app.get("/injuries/:sport/:league/:teamId", async (req, res) => {
 });
 
 
-// MLB injury page - fetch with browser-like headers
+// MLB injuries + transactions -- multi-source with fallback
 app.get("/mlbinjuries/:teamSlug", async (req, res) => {
   const { teamSlug } = req.params;
-  try {
-    const url = `https://www.mlb.com/news/${teamSlug}-injuries-and-roster-moves`;
-    const r = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Cache-Control": "no-cache",
-        "Referer": "https://www.google.com/",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "cross-site"
+
+  // ── Source 1: MLB Stats API (structured JSON) ──────────────────────────
+  async function tryStatsAPI() {
+    // Team ID map
+    const teamIds = { mets: 121, yankees: 147, dodgers: 119, braves: 144, phillies: 143 };
+    const teamId = teamIds[teamSlug.toLowerCase()] || 121;
+    try {
+      const r = await fetch(
+        `https://statsapi.mlb.com/api/v1/teams/${teamId}/roster?rosterType=injuries&season=${new Date().getFullYear()}`,
+        { headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" } }
+      );
+      if (!r.ok) return null;
+      const d = await r.json();
+      const roster = d?.roster || [];
+      if (!roster.length) return null;
+      const injuries = roster.map(p => ({
+        name: p?.person?.fullName || "",
+        pos:  p?.position?.abbreviation || "",
+        injury: p?.status?.description || p?.status?.code || "IL",
+        expectedReturn: "TBD"
+      })).filter(i => i.name);
+      return injuries.length ? { injuries, transactions: [], source: "statsapi" } : null;
+    } catch { return null; }
+  }
+
+  // ── Source 2: ESPN injuries endpoint ───────────────────────────────────
+  async function tryESPN() {
+    const espnIds = { mets: 21, yankees: 10, dodgers: 19, braves: 15, phillies: 20 };
+    const teamId = espnIds[teamSlug.toLowerCase()] || 21;
+    try {
+      const r = await fetch(
+        `${CORE}/sports/baseball/leagues/mlb/teams/${teamId}/injuries?limit=25`,
+        { headers: { "Accept": "application/json" } }
+      );
+      if (!r.ok) return null;
+      const d = await r.json();
+      const items = d?.items || [];
+      if (!items.length) return null;
+      const injuries = [];
+      for (const item of items) {
+        let inj = item;
+        if (item?.$ref && !item?.athlete) {
+          try {
+            const ref = await fetch(item.$ref, { headers: { Accept: "application/json" } });
+            if (ref.ok) inj = await ref.json();
+          } catch {}
+        }
+        const ath = inj?.athlete || {};
+        const name = ath?.displayName || "";
+        const pos  = ath?.position?.abbreviation || "";
+        const status = inj?.status || inj?.type?.description || "";
+        const detail = inj?.details?.detail || inj?.longComment || "";
+        if (name) injuries.push({ name, pos, injury: detail || status, expectedReturn: "TBD" });
       }
-    });
+      return injuries.length ? { injuries, transactions: [], source: "espn" } : null;
+    } catch { return null; }
+  }
 
-    if (!r.ok) return res.json({ found: false, injuries: [], transactions: [], status: r.status });
-    const html = await r.text();
+  // ── Source 3: MLB.com scrape (current working method) ─────────────────
+  async function tryMLBScrape() {
+    try {
+      const r = await fetch(`https://www.mlb.com/news/${teamSlug}-injuries-and-roster-moves`, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,*/*;q=0.9",
+          "Accept-Language": "en-US,en;q=0.9",
+          "Referer": "https://www.google.com/"
+        }
+      });
+      if (!r.ok) return null;
+      const html = await r.text();
 
-    // Normalize HTML to text
-    const normalized = html
-      .replace(/<strong>/gi, '**').replace(/<\/strong>/gi, '**')
-      .replace(/<br[^>]*>/gi, ' ')
-      .replace(/<\/p>/gi, ' ').replace(/<\/li>/gi, ' ')
-      .replace(/<\/div>/gi, ' ')
-      .replace(/<[^>]+>/g, '')
-      .replace(/<[^>]+>/g, '')
-      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-      .replace(/&#x27;/g, "'").replace(/&nbsp;/g, ' ')
-      .replace(/[ 	]{2,}/g, ' ');
-
-    const injuries = [];
-    const transactions = [];
-
-    // MLB.com stores content as JSON-encoded strings in __typename:Markdown blocks
-    const contentRe = /"__typename"\s*:\s*"Markdown"[^}]{0,50}"content"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
-    const allBlocks = [];
-    let cm;
-    while ((cm = contentRe.exec(html)) !== null) {
-      let raw;
-      try { raw = JSON.parse('"' + cm[1] + '"'); }
-      catch { raw = cm[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'); }
-      // Strip HTML tags (forge-entity etc) but keep inner text
-      const clean = raw.replace(/<[^>]+>/g, '').replace(/[ \t]{2,}/g, ' ');
-      allBlocks.push(clean);
-    }
-
-    let inInjuries = false, inTransactions = false;
-    const months = /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+$/;
-    let txDate = '';
-
-    for (const rawBlock of allBlocks) {
-      const t = rawBlock.trim();
-      if (/LATEST INJURIES/i.test(t))     { inInjuries = true; inTransactions = false; continue; }
-      if (/LATEST TRANSACTIONS/i.test(t)) { inInjuries = false; inTransactions = true; continue; }
-      if (/More from MLB/i.test(t))        { inInjuries = false; inTransactions = false; continue; }
-
-      if (inInjuries) {
-        const nameM = t.match(/^(RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+([A-Za-z][A-Za-z .'-]+)/);
-        if (!nameM) continue;
-        const pos  = nameM[1];
-        const name = nameM[2].trim();
-        const injM = t.match(/\*\*Injury:\*\*\s*([^\n*]{4,120})/i);
-        const retM = t.match(/\*\*Expected return:\*\*\s*([^\n*]{2,60})/i);
-        const injury = injM?.[1]?.replace(/\*+$/,'').trim() || '';
-        const ret    = retM?.[1]?.replace(/\*+$/,'').trim() || 'TBD';
-        if (name && injury) injuries.push({ name, pos, injury, expectedReturn: ret });
+      const contentRe = /"__typename"\s*:\s*"Markdown"[^}]{0,50}"content"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+      const allBlocks = [];
+      let cm;
+      while ((cm = contentRe.exec(html)) !== null) {
+        let raw;
+        try { raw = JSON.parse('"' + cm[1] + '"'); }
+        catch { raw = cm[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'); }
+        allBlocks.push(raw.replace(/<[^>]+>/g, '').replace(/[ \t]{2,}/g, ' '));
       }
 
-      if (inTransactions) {
-        if (months.test(t)) { txDate = t; continue; }
-        if (txDate && (t.startsWith('•') || /Recalled|Optioned|Activated|Placed|Designated|Transferred|Selected|Released/i.test(t))) {
-          const clean = t.replace(/^[•·\s]+/,'').replace(/\[([^\]]+)\]\([^)]+\)/g,'$1').replace(/\*+/g,'').trim();
-          if (clean.length > 5) transactions.push({ date: txDate, move: clean });
+      const injuries = [], transactions = [];
+      let inInjuries = false, inTransactions = false;
+      const monthRe = /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+$/;
+      let txDate = '';
+
+      for (const block of allBlocks) {
+        const t = block.trim();
+        if (/LATEST INJURIES/i.test(t))     { inInjuries = true; inTransactions = false; continue; }
+        if (/LATEST TRANSACTIONS/i.test(t)) { inInjuries = false; inTransactions = true; continue; }
+        if (/More from MLB/i.test(t))        { inInjuries = false; inTransactions = false; continue; }
+
+        if (inInjuries) {
+          const nameM = t.match(/^(RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+([A-Za-z][A-Za-z .'-]+)/);
+          if (!nameM) continue;
+          const injM = t.match(/\*\*Injury:\*\*\s*([^\n*]{4,120})/i);
+          const retM = t.match(/\*\*Expected return:\*\*\s*([^\n*]{2,60})/i);
+          const injury = injM?.[1]?.replace(/\*+$/,'').trim() || '';
+          const ret    = retM?.[1]?.replace(/\*+$/,'').trim() || 'TBD';
+          if (nameM[2] && injury) injuries.push({ pos: nameM[1], name: nameM[2].trim(), injury, expectedReturn: ret });
+        }
+
+        if (inTransactions) {
+          const stripped = t.replace(/\*+/g, '').trim();
+          if (monthRe.test(stripped)) { txDate = stripped; continue; }
+          if (t.startsWith('•') || t.startsWith('·') || t.startsWith('-') ||
+              /Recalled|Optioned|Activated|Placed|Designated|Transferred|Selected|Released|Reinstated|Claimed/i.test(t)) {
+            const clean = t.replace(/^[•·\-\s]+/,'').replace(/\[([^\]]+)\]\([^)]+\)/g,'$1').replace(/\*+/g,'').trim();
+            if (clean.length > 5) transactions.push({ date: txDate || 'Recent', move: clean });
+          }
         }
       }
-    }
 
-    res.json({ found: true, injuries, transactions });
+      return (injuries.length || transactions.length)
+        ? { injuries, transactions, source: "mlb.com" }
+        : null;
+    } catch { return null; }
+  }
+
+  // Try sources in order, return first success
+  try {
+    const result = await tryMLBScrape()
+                || await tryESPN()
+                || await tryStatsAPI()
+                || { injuries: [], transactions: [], source: "none" };
+    res.json({ found: true, ...result });
   } catch(e) {
     res.status(500).json({ error: e.message, found: false, injuries: [], transactions: [] });
   }
 });
 
-
-// Debug: show raw MLB injury page
-app.get("/mlbdebug", async (req, res) => {
-  try {
-    const r = await fetch("https://www.mlb.com/news/mets-injuries-and-roster-moves", { headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html" } });
-    const html = await r.text();
-    // Return first 3000 chars to inspect format
-    // Test the contentRe regex directly
-    const contentRe = /"__typename"\s*:\s*"Markdown"[^}]{0,50}"content"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
-    const blocks = [];
-    let cm;
-    while ((cm = contentRe.exec(html)) !== null) {
-      try { blocks.push(JSON.parse('"' + cm[1] + '"')); }
-      catch { blocks.push(cm[1].replace(/\\n/g,'\n')); }
-    }
-    // Also try alternative key order: content before __typename
-    const contentRe2 = /"content"\s*:\s*"((?:[^"\\]|\\.){10,500})"[^}]{0,100}"__typename"\s*:\s*"Markdown"/g;
-    const blocks2 = [];
-    while ((cm = contentRe2.exec(html)) !== null) {
-      try { blocks2.push(JSON.parse('"' + cm[1] + '"')); }
-      catch { blocks2.push(cm[1].slice(0,80)); }
-    }
-    const injBlocks = blocks.filter(b => /RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF/.test(b));
-    res.json({
-      status: r.status,
-      htmlLength: html.length,
-      blocksFound: blocks.length,
-      blocks2Found: blocks2.length,
-      injBlocks: injBlocks.length,
-      firstBlock: blocks[0]?.slice(0,100),
-      firstInjBlock: injBlocks[0]?.slice(0,150),
-      rawSnippet: html.slice(html.indexOf('"__typename":"Markdown"'), html.indexOf('"__typename":"Markdown"') + 200)
-    });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
 
 // Raw HTML passthrough for MLB injury page
 app.get("/mlbraw/:teamSlug", async (req, res) => {
@@ -622,6 +635,29 @@ app.get("/mlbraw/:teamSlug", async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.send(html);
   } catch(e) { res.status(500).send(""); }
+});
+
+
+// MLB.com news feed for a team
+app.get("/mlbnews/:teamSlug", async (req, res) => {
+  const { teamSlug } = req.params;
+  const slugToId = { mets: 121, yankees: 147, dodgers: 119, braves: 144, phillies: 143 };
+  const teamId = slugToId[teamSlug.toLowerCase()] || 121;
+  try {
+    const r = await fetch(
+      `https://statsapi.mlb.com/api/v1/news?teamId=${teamId}&limit=10&language=en`,
+      { headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0" } }
+    );
+    if (!r.ok) return res.json({ articles: [] });
+    const d = await r.json();
+    const articles = (d?.items || d?.news || []).map(a => ({
+      headline: a.headline || a.title || "",
+      description: a.subhead || a.blurb || a.description || "",
+      date: a.date || a.timestamp || "",
+      url: a.url || ""
+    })).filter(a => a.headline);
+    res.json({ articles });
+  } catch(e) { res.json({ articles: [] }); }
 });
 
 
