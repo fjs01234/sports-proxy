@@ -512,9 +512,24 @@ app.get("/mlbinjuries/:teamSlug", async (req, res) => {
       }
     }
 
-    res.json({ found: true, injuries, source: url });
+    // Parse latest transactions
+    const transactions = [];
+    const txSection = html.split('### LATEST TRANSACTIONS')[1] || '';
+    const txDayBlocks = txSection.split(/\n(?=\*\*[A-Z][a-z]+ \d)/);
+    for (const block of txDayBlocks.slice(0, 3)) { // last 3 days
+      const dateMatch = block.match(/\*\*([^*]+)\*\*/);
+      if (!dateMatch) continue;
+      const date = dateMatch[1].trim();
+      const lines = block.split('\n').filter(l => l.startsWith('•'));
+      for (const line of lines) {
+        const clean = line.replace(/•\s*/, '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/\*\*/g, '').trim();
+        if (clean) transactions.push({ date, move: clean });
+      }
+    }
+
+    res.json({ found: true, injuries, transactions, source: url });
   } catch(e) {
-    res.status(500).json({ error: e.message, found: false, injuries: [] });
+    res.status(500).json({ error: e.message, found: false, injuries: [], transactions: [] });
   }
 });
 
