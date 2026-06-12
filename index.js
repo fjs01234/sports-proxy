@@ -411,6 +411,16 @@ app.get("/boxdebug/:sport/:league/:teamId", async (req, res) => {
 });
 
 
+// Game summary by event ID
+app.get("/summary/:sport/:league/:gameId", async (req, res) => {
+  const { sport, league, gameId } = req.params;
+  try {
+    const r = await fetch(`${SITE}/sports/${sport}/${league}/summary?event=${gameId}`, { headers: { Accept: "application/json" } });
+    res.json(await r.json());
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`proxy running on ${PORT}`));
 
