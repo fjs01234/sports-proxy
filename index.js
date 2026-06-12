@@ -577,14 +577,32 @@ app.get("/mlbdebug", async (req, res) => {
     const r = await fetch("https://www.mlb.com/news/mets-injuries-and-roster-moves", { headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html" } });
     const html = await r.text();
     // Return first 3000 chars to inspect format
-    const norm = html
-      .replace(/<strong>/gi, '**').replace(/<\/strong>/gi, '**')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&amp;/g, '&').replace(/&#x27;/g, "'").replace(/&nbsp;/g,' ')
-      .replace(/[ \t]{2,}/g, ' ');
-    const injIdx = norm.search(/LATEST INJURIES/i);
-    const snippet = injIdx >= 0 ? norm.slice(injIdx, injIdx + 1500) : norm.slice(0, 1500);
-    res.json({ status: r.status, hasInjuries: injIdx >= 0, snippet });
+    // Test the contentRe regex directly
+    const contentRe = /"__typename"\s*:\s*"Markdown"[^}]{0,50}"content"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+    const blocks = [];
+    let cm;
+    while ((cm = contentRe.exec(html)) !== null) {
+      try { blocks.push(JSON.parse('"' + cm[1] + '"')); }
+      catch { blocks.push(cm[1].replace(/\\n/g,'\n')); }
+    }
+    // Also try alternative key order: content before __typename
+    const contentRe2 = /"content"\s*:\s*"((?:[^"\\]|\\.){10,500})"[^}]{0,100}"__typename"\s*:\s*"Markdown"/g;
+    const blocks2 = [];
+    while ((cm = contentRe2.exec(html)) !== null) {
+      try { blocks2.push(JSON.parse('"' + cm[1] + '"')); }
+      catch { blocks2.push(cm[1].slice(0,80)); }
+    }
+    const injBlocks = blocks.filter(b => /RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF/.test(b));
+    res.json({
+      status: r.status,
+      htmlLength: html.length,
+      blocksFound: blocks.length,
+      blocks2Found: blocks2.length,
+      injBlocks: injBlocks.length,
+      firstBlock: blocks[0]?.slice(0,100),
+      firstInjBlock: injBlocks[0]?.slice(0,150),
+      rawSnippet: html.slice(html.indexOf('"__typename":"Markdown"'), html.indexOf('"__typename":"Markdown"') + 200)
+    });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
