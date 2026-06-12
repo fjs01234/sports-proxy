@@ -695,7 +695,8 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
       away: { name: away?.team?.displayName, abbr: away?.team?.abbreviation, score: away?.score },
       venue, attendance, gameDate,
       teamStats, keyMoments, scoringPlays,
-      status: gameEvent?.status?.type?.description || "Final"
+      status: gameEvent?.status?.type?.description || "Final",
+      _debug: { playersCount: players.length, firstPlayerTeam: players[0]?.team?.abbreviation, firstPlayerStatGroups: players[0]?.statistics?.map(s=>({name:s.name, athleteCount:s.athletes?.length, keys:s.keys?.slice(0,5), firstStats:s.athletes?.[0]?.stats?.slice(0,5)})) }
     });
 
   } catch(e) {
