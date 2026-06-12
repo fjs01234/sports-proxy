@@ -571,7 +571,14 @@ app.get("/mlbdebug", async (req, res) => {
     const r = await fetch("https://www.mlb.com/news/mets-injuries-and-roster-moves", { headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html" } });
     const html = await r.text();
     // Return first 3000 chars to inspect format
-    res.json({ status: r.status, preview: html.slice(0, 3000), hasInjuries: html.includes("LATEST INJURIES"), hasBold: html.includes("**Injury:**"), hasStrong: html.includes("<strong>Injury:") });
+    const norm = html
+      .replace(/<strong>/gi, '**').replace(/<\/strong>/gi, '**')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&').replace(/&#x27;/g, "'").replace(/&nbsp;/g,' ')
+      .replace(/[ \t]{2,}/g, ' ');
+    const injIdx = norm.search(/LATEST INJURIES/i);
+    const snippet = injIdx >= 0 ? norm.slice(injIdx, injIdx + 1500) : norm.slice(0, 1500);
+    res.json({ status: r.status, hasInjuries: injIdx >= 0, snippet });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
