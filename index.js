@@ -533,83 +533,80 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
     const sumRes = await fetch(`${SITE}/sports/${sport}/${league}/summary?event=${gameId}`, { headers: { Accept: "application/json" } });
     const sum = await sumRes.json();
 
-    // Extract boxscore - batting and pitching leaders
+    // Extract boxscore
     const boxscore = sum?.boxscore || {};
-    const players = boxscore?.players || [];
 
-    // boxscore.teams[] has team-level R/H/E stats
+    // R/H/E: boxscore.teams[].statistics has groups like batting/fielding/records
+    // R comes from the "batting" group, E from "fielding"
     const teamRHE = {};
     for (const tb of (boxscore?.teams || [])) {
       const abbr = tb?.team?.abbreviation || "";
-      const stats = tb?.statistics || [];
-      const getStat = (...names) => {
-        for (const n of names) {
-          const s = stats.find(x => x.name === n || x.abbreviation === n || x.label === n);
-          if (s) return s.displayValue ?? String(s.value ?? "?");
+      let R = "?", H = "?", E = "0";
+      for (const grp of (tb?.statistics || [])) {
+        const keys = grp?.keys || [];
+        const vals = grp?.totals || [];
+        const statMap = {};
+        keys.forEach((k, i) => { if (vals[i]) statMap[k] = vals[i]; });
+        if (grp.name === "batting") {
+          R = statMap["R"] ?? statMap["runs"] ?? R;
+          H = statMap["H"] ?? statMap["hits"] ?? H;
         }
-        return "?";
-      };
-      teamRHE[abbr] = {
-        R: getStat("runs","R","runsScored"),
-        H: getStat("hits","H"),
-        E: getStat("errors","E","0")
-      };
+        if (grp.name === "fielding") {
+          E = statMap["E"] ?? statMap["errors"] ?? E;
+        }
+      }
+      teamRHE[abbr] = { R, H, E };
     }
 
+    // Athletes: boxscore.players[] keyed by team
+    const players = boxscore?.players || [];
     const teamStats = [];
+
     for (const teamBlock of players) {
       const tName = teamBlock?.team?.displayName || "";
       const tAbbr = teamBlock?.team?.abbreviation || "";
       const isNYM = tAbbr === "NYM" || String(teamBlock?.team?.id) === String(teamId);
-      const stats = teamBlock?.statistics || [];
       const rhe = teamRHE[tAbbr] || { R:"?", H:"?", E:"0" };
-
       const hitters = [];
       const pitchers = [];
 
-      for (const statGroup of stats) {
-        const type = statGroup?.name || "";
-        const athletes = statGroup?.athletes || [];
+      for (const statGroup of (teamBlock?.statistics || [])) {
+        const type = (statGroup?.name || "").toLowerCase();
         const keys = statGroup?.keys || [];
-        const labels = statGroup?.labels || statGroup?.shortLabels || keys;
-
-        for (const ath of athletes) {
+        for (const ath of (statGroup?.athletes || [])) {
           const name = ath?.athlete?.displayName || "";
-          const pos = ath?.athlete?.position?.abbreviation || "";
           const vals = ath?.stats || [];
           if (!name || !vals.length) continue;
-
           const statMap = {};
-          keys.forEach((k, i) => { if (vals[i] && vals[i] !== "--") statMap[k] = vals[i]; });
+          keys.forEach((k, i) => { if (vals[i] != null && vals[i] !== "--") statMap[k] = vals[i]; });
 
-          if (type === "batting" || type.includes("batting")) {
-            const ab = statMap["AB"] || statMap["atBats"];
-            const h  = statMap["H"] || statMap["hits"];
-            const hr = statMap["HR"] || statMap["homeRuns"];
-            const rbi= statMap["RBI"] || statMap["runsBattedIn"];
-            const bb = statMap["BB"] || statMap["walks"];
-            const avg= statMap["AVG"] || statMap["avg"];
-            if (ab || h) {
+          if (type === "batting") {
+            const ab  = statMap["AB"];
+            const h   = statMap["H"];
+            const hr  = statMap["HR"];
+            const rbi = statMap["RBI"];
+            const bb  = statMap["BB"];
+            if (ab != null || h != null) {
               let line = `${name}`;
-              if (h && ab) line += ` ${h}-${ab}`;
-              if (hr && hr !== "0") line += ` HR`;
-              if (rbi && rbi !== "0") line += ` ${rbi} RBI`;
-              if (bb && bb !== "0") line += ` BB`;
-              hitters.push({ name, line, isNYM });
+              if (h != null && ab != null) line += ` ${h}-${ab}`;
+              if (hr && hr !== "0") line += `, ${hr} HR`;
+              if (rbi && rbi !== "0") line += `, ${rbi} RBI`;
+              if (bb && bb !== "0") line += `, BB`;
+              hitters.push({ name, line });
             }
-          } else if (type === "pitching" || type.includes("pitching")) {
-            const ip  = statMap["IP"] || statMap["inningsPitched"];
-            const er  = statMap["ER"] || statMap["earnedRuns"];
-            const so  = statMap["K"] || statMap["SO"] || statMap["strikeouts"];
-            const bb  = statMap["BB"] || statMap["walks"];
-            const dec = statMap["note"] || ath?.athlete?.note || "";
+          } else if (type === "pitching") {
+            const ip  = statMap["IP"];
+            const er  = statMap["ER"];
+            const so  = statMap["K"] || statMap["SO"];
+            const bb  = statMap["BB"];
+            const dec = ath?.athlete?.note || "";
             if (ip) {
-              let line = `${name} ${ip} IP`;
-              if (er !== undefined && er !== "--") line += ` ${er} ER`;
-              if (so && so !== "0") line += ` ${so} K`;
-              if (bb && bb !== "0") line += ` ${bb} BB`;
+              let line = `${name}: ${ip} IP`;
+              if (er != null && er !== "--") line += `, ${er} ER`;
+              if (so && so !== "0") line += `, ${so} K`;
+              if (bb && bb !== "0") line += `, ${bb} BB`;
               if (dec) line += ` (${dec})`;
-              pitchers.push({ name, line, isNYM });
+              pitchers.push({ name, line });
             }
           }
         }
