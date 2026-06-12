@@ -492,50 +492,51 @@ app.get("/mlbinjuries/:teamSlug", async (req, res) => {
     const html = await r.text();
 
     const injuries = [];
-    // Strip HTML tags for easier parsing
-    const text = html
+
+    // Normalize: convert <strong> to ** so we have one format to parse
+    const normalized = html
+      .replace(/<strong>/gi, '**').replace(/<\/strong>/gi, '**')
       .replace(/<[^>]+>/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&#x27;/g, "'")
-      .replace(/\s{2,}/g, ' ')
-      .replace(/\n\s*\n/g, '\n');
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#x27;/g, "'")
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/\n[ \t]+/g, '\n');
 
-    // Split on position markers
-    const posPattern = /(RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+([A-Z][a-zA-Z .'-]+)/g;
-    let match;
-    const entries = [];
-    while ((match = posPattern.exec(text)) !== null) {
-      entries.push({ pos: match[1], name: match[2].trim(), idx: match.index });
-    }
+    // Find the LATEST INJURIES section
+    const injSection = normalized.split(/LATEST INJURIES/i)[1] || normalized;
+    const endMarker  = injSection.search(/LATEST TRANSACTIONS/i);
+    const injText    = endMarker > 0 ? injSection.slice(0, endMarker) : injSection.slice(0, 8000);
 
-    for (let i = 0; i < entries.length; i++) {
-      const start = entries[i].idx;
-      const end   = entries[i+1]?.idx || start + 600;
-      const chunk = text.slice(start, end);
-      const injMatch  = chunk.match(/Injury[:\s]+([^\n.]{5,80})/i);
-      const retMatch  = chunk.match(/Expected return[:\s]+([^\n.]{2,40})/i);
-      const injury = injMatch?.[1]?.trim() || "";
-      const ret    = retMatch?.[1]?.trim() || "TBD";
-      if (entries[i].name && injury) {
-        injuries.push({ name: entries[i].name, pos: entries[i].pos, injury, expectedReturn: ret });
+    // Split on position+name lines: "RHP Kodai Senga" at start of a segment
+    const segments = injText.split(/(?=\n(?:RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+[A-Z])/);
+
+    for (const seg of segments) {
+      const nameLine = seg.match(/^\n?(RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+([A-Za-z][A-Za-z .'-]+)/);
+      if (!nameLine) continue;
+      const pos  = nameLine[1].trim();
+      const name = nameLine[2].trim().replace(/\s+$/, '');
+      const injMatch = seg.match(/\*\*Injury:\*\*\s*([^\n*]{4,100})/i) || seg.match(/Injury:\s*([^\n*]{4,100})/i);
+      const retMatch = seg.match(/\*\*Expected return:\*\*\s*([^\n*]{2,50})/i) || seg.match(/Expected return:\s*([^\n*]{2,50})/i);
+      const injury = injMatch?.[1]?.trim().replace(/\*+$/, '') || "";
+      const ret    = retMatch?.[1]?.trim().replace(/\*+$/, '') || "TBD";
+      if (name && injury) {
+        injuries.push({ name, pos, injury, expectedReturn: ret });
       }
     }
 
     // Parse latest transactions
     const transactions = [];
-    // Parse transactions from HTML -- look for date headers and bullet moves
-    const txRaw = html.split(/LATEST TRANSACTIONS/i)[1] || '';
-    const txText = txRaw.replace(/<[^>]+>/g,' ').replace(/\s{2,}/g,' ').replace(/&amp;/g,'&');
-    const txDateBlocks = txText.split(/(?=(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d)/);
-    for (const block of txDateBlocks.slice(0, 3)) {
-      const dateMatch = block.match(/^((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+)/);
+    // Parse transactions using normalized text
+    const txRaw  = normalized.split(/LATEST TRANSACTIONS/i)[1] || '';
+    const txDateBlocks = txRaw.split(/(?=\n(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d)/);
+    for (const block of txDateBlocks.slice(0, 4)) {
+      const dateMatch = block.match(/((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+)/);
       if (!dateMatch) continue;
       const date = dateMatch[1].trim();
-      const moveMatches = block.matchAll(/[•·\-]\s*([A-Z]{1,3}\s[A-Z][^•·\n]{5,80}(?:Recalled|Optioned|Activated|Placed|Designated|Transferred|Selected|Released)[^•·\n]{0,60})/g);
-      for (const m of moveMatches) {
-        transactions.push({ date, move: m[1].trim() });
+      // Bullet lines with roster moves
+      const lines = block.split('\n').filter(l => /[•·]/.test(l) || /:\s*(Recalled|Optioned|Activated|Placed|Designated|Transferred|Selected|Released)/i.test(l));
+      for (const line of lines) {
+        const clean = line.replace(/^[•·\s]+/, '').replace(/\*+/g, '').replace(/\[([^\]]+)\][^)]*\)/g, '$1').trim();
+        if (clean.length > 5) transactions.push({ date, move: clean });
       }
     }
 
