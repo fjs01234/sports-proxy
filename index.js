@@ -492,18 +492,17 @@ app.get("/mlbinjuries/:teamSlug", async (req, res) => {
     const html = await r.text();
 
     const injuries = [];
-    // Parse each injury block: name, injury, status
-    // Pattern: position+name line, then Injury:, IL date:, Expected return:, Status:
-    const blocks = html.split(/\n(?=(?:RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s)/);
-    
+    // Split into blocks on double newline, parse each injury entry
+    const blocks = html.split(/\n\n+/);
     for (const block of blocks) {
-      const nameLine = block.match(/^(RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+([^\n\[]+)/);
+      // Match: "RHP [Name](url)" or "RHP Name"
+      const nameLine = block.match(/^(RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+(?:\[([^\]]+)\][^\n]*|([^\n\[]+))/m);
       if (!nameLine) continue;
       const pos  = nameLine[1].trim();
-      const name = nameLine[2].trim();
-      const injMatch   = block.match(/\*\*Injury:\*\*\s*([^\n]+)/);
-      const retMatch   = block.match(/\*\*Expected return:\*\*\s*([^\n]+)/);
-      const statMatch  = block.match(/\*\*Status:\*\*\s*([^\n*]+)/);
+      const name = (nameLine[2] || nameLine[3] || "").trim();
+      const injMatch  = block.match(/\*\*Injury:\*\*\s*([^\n]+)/);
+      const retMatch  = block.match(/\*\*Expected return:\*\*\s*([^\n]+)/);
+      const statMatch = block.match(/\*\*Status:\*\*\s*([^\n*(]+)/);
       const injury = injMatch?.[1]?.trim() || "";
       const ret    = retMatch?.[1]?.trim() || "TBD";
       const status = statMatch?.[1]?.trim() || "";
