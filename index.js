@@ -597,41 +597,73 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
         const type = (statGroup?.name || "").toLowerCase();
         const keys = statGroup?.keys || [];
         for (const ath of (statGroup?.athletes || [])) {
-          const name = ath?.athlete?.displayName || "";
+          const name = ath?.athlete?.displayName || ath?.athlete?.shortName || "";
           const vals = ath?.stats || [];
           if (!name || !vals.length) continue;
           const statMap = {};
           keys.forEach((k, i) => { if (vals[i] != null && vals[i] !== "--") statMap[k] = vals[i]; });
 
           if (type === "batting") {
-            const ab  = statMap["AB"];
-            const h   = statMap["H"];
-            const hr  = statMap["HR"];
-            const rbi = statMap["RBI"];
-            const bb  = statMap["BB"];
-            if (ab != null || h != null) {
-              let line = `${name}`;
-              if (h != null && ab != null) line += ` ${h}-${ab}`;
+            // keys: hits-atBats, atBats, runs, hits, RBIs, homeRuns, walks, strikeouts, pitches, avg
+            const hab = statMap["hits-atBats"] || "";          // "1-4"
+            const ab  = statMap["atBats"];
+            const h   = statMap["hits"];
+            const hr  = statMap["homeRuns"];
+            const rbi = statMap["RBIs"];
+            const bb  = statMap["walks"];
+            if (hab || ab != null || h != null) {
+              let line = `${name}: ${hab || (h + "-" + ab)}`;
               if (hr && hr !== "0") line += `, ${hr} HR`;
               if (rbi && rbi !== "0") line += `, ${rbi} RBI`;
               if (bb && bb !== "0") line += `, BB`;
               hitters.push({ name, line });
             }
           } else if (type === "pitching") {
-            const ip  = statMap["IP"];
-            const er  = statMap["ER"];
-            const so  = statMap["K"] || statMap["SO"];
-            const bb  = statMap["BB"];
+            // keys: fullInnings.partInnings, hits, runs, earnedRuns, walks, strikeouts, homeRuns, pitches-strikes, ERA, pitches
+            const ip  = statMap["fullInnings.partInnings"];
+            const er  = statMap["earnedRuns"];
+            const so  = statMap["strikeouts"];
+            const bb  = statMap["walks"];
+            const era = statMap["ERA"];
             const dec = ath?.athlete?.note || "";
             if (ip) {
               let line = `${name}: ${ip} IP`;
-              if (er != null && er !== "--") line += `, ${er} ER`;
+              if (er != null) line += `, ${er} ER`;
               if (so && so !== "0") line += `, ${so} K`;
               if (bb && bb !== "0") line += `, ${bb} BB`;
-              if (dec) line += ` (${dec})`;
+              if (era) line += ` (ERA: ${era})`;
+              if (dec) line += ` [${dec}]`;
               pitchers.push({ name, line });
             }
           }
+        }
+      }
+      // H from batting: sum hits column across all batters
+      const battingGroup = (teamBlock?.statistics || []).find(s => s.name === "batting");
+      if (battingGroup) {
+        const keys = battingGroup.keys || [];
+        const hIdx = keys.indexOf("hits");
+        if (hIdx >= 0) {
+          let totalH = 0;
+          for (const ath of (battingGroup.athletes || [])) {
+            const v = parseInt(ath?.stats?.[hIdx]);
+            if (!isNaN(v)) totalH += v;
+          }
+          if (totalH > 0) teamRHE[abbr].H = String(totalH);
+        }
+      }
+      // E from fielding group if present
+      const fieldingGroup = (teamBlock?.statistics || []).find(s => s.name === "fielding");
+      if (fieldingGroup) {
+        const keys = fieldingGroup.keys || [];
+        const eIdx = keys.indexOf("errors");
+        if (eIdx >= 0) {
+          let totalE = 0;
+          for (const ath of (fieldingGroup.athletes || [])) {
+            const v = parseInt(ath?.stats?.[eIdx]);
+            if (!isNaN(v)) totalE += v;
+          }
+          teamRHE[abbr].E = String(totalE);
         }
       }
       teamStats.push({ tName, tAbbr, isNYM, hitters, pitchers, R: rhe.R, H: rhe.H, E: rhe.E });
