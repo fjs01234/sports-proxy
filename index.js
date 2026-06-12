@@ -492,37 +492,50 @@ app.get("/mlbinjuries/:teamSlug", async (req, res) => {
     const html = await r.text();
 
     const injuries = [];
-    // Split into blocks on double newline, parse each injury entry
-    const blocks = html.split(/\n\n+/);
-    for (const block of blocks) {
-      // Match: "RHP [Name](url)" or "RHP Name"
-      const nameLine = block.match(/^(RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+(?:\[([^\]]+)\][^\n]*|([^\n\[]+))/m);
-      if (!nameLine) continue;
-      const pos  = nameLine[1].trim();
-      const name = (nameLine[2] || nameLine[3] || "").trim();
-      const injMatch  = block.match(/\*\*Injury:\*\*\s*([^\n]+)/);
-      const retMatch  = block.match(/\*\*Expected return:\*\*\s*([^\n]+)/);
-      const statMatch = block.match(/\*\*Status:\*\*\s*([^\n*(]+)/);
+    // Strip HTML tags for easier parsing
+    const text = html
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&#x27;/g, "'")
+      .replace(/\s{2,}/g, ' ')
+      .replace(/\n\s*\n/g, '\n');
+
+    // Split on position markers
+    const posPattern = /(RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+([A-Z][a-zA-Z .'-]+)/g;
+    let match;
+    const entries = [];
+    while ((match = posPattern.exec(text)) !== null) {
+      entries.push({ pos: match[1], name: match[2].trim(), idx: match.index });
+    }
+
+    for (let i = 0; i < entries.length; i++) {
+      const start = entries[i].idx;
+      const end   = entries[i+1]?.idx || start + 600;
+      const chunk = text.slice(start, end);
+      const injMatch  = chunk.match(/Injury[:\s]+([^\n.]{5,80})/i);
+      const retMatch  = chunk.match(/Expected return[:\s]+([^\n.]{2,40})/i);
       const injury = injMatch?.[1]?.trim() || "";
       const ret    = retMatch?.[1]?.trim() || "TBD";
-      const status = statMatch?.[1]?.trim() || "";
-      if (name && injury) {
-        injuries.push({ name, pos, injury, expectedReturn: ret, status: status.slice(0, 150) });
+      if (entries[i].name && injury) {
+        injuries.push({ name: entries[i].name, pos: entries[i].pos, injury, expectedReturn: ret });
       }
     }
 
     // Parse latest transactions
     const transactions = [];
-    const txSection = html.split('### LATEST TRANSACTIONS')[1] || '';
-    const txDayBlocks = txSection.split(/\n(?=\*\*[A-Z][a-z]+ \d)/);
-    for (const block of txDayBlocks.slice(0, 3)) { // last 3 days
-      const dateMatch = block.match(/\*\*([^*]+)\*\*/);
+    // Parse transactions from HTML -- look for date headers and bullet moves
+    const txRaw = html.split(/LATEST TRANSACTIONS/i)[1] || '';
+    const txText = txRaw.replace(/<[^>]+>/g,' ').replace(/\s{2,}/g,' ').replace(/&amp;/g,'&');
+    const txDateBlocks = txText.split(/(?=(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d)/);
+    for (const block of txDateBlocks.slice(0, 3)) {
+      const dateMatch = block.match(/^((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+)/);
       if (!dateMatch) continue;
       const date = dateMatch[1].trim();
-      const lines = block.split('\n').filter(l => l.startsWith('•'));
-      for (const line of lines) {
-        const clean = line.replace(/•\s*/, '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/\*\*/g, '').trim();
-        if (clean) transactions.push({ date, move: clean });
+      const moveMatches = block.matchAll(/[•·\-]\s*([A-Z]{1,3}\s[A-Z][^•·\n]{5,80}(?:Recalled|Optioned|Activated|Placed|Designated|Transferred|Selected|Released)[^•·\n]{0,60})/g);
+      for (const m of moveMatches) {
+        transactions.push({ date, move: m[1].trim() });
       }
     }
 
@@ -536,7 +549,7 @@ app.get("/mlbinjuries/:teamSlug", async (req, res) => {
 // Debug: show raw MLB injury page
 app.get("/mlbdebug", async (req, res) => {
   try {
-    const r = await fetch("https://www.mlb.com/amp/news/mets-injuries-and-roster-moves", { headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html" } });
+    const r = await fetch("https://www.mlb.com/news/mets-injuries-and-roster-moves", { headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html" } });
     const html = await r.text();
     // Return first 3000 chars to inspect format
     res.json({ status: r.status, preview: html.slice(0, 3000), hasInjuries: html.includes("LATEST INJURIES"), hasBold: html.includes("**Injury:**"), hasStrong: html.includes("<strong>Injury:") });
