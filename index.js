@@ -421,33 +421,64 @@ app.get("/summary/:sport/:league/:gameId", async (req, res) => {
 });
 
 
-// Team injuries
+// Team injuries -- ESPN core API with $ref expansion
 app.get("/injuries/:sport/:league/:teamId", async (req, res) => {
   const { sport, league, teamId } = req.params;
-  const urls = [
-    `${SITE}/sports/${sport}/${league}/teams/${teamId}/injuries`,
-    `${CORE}/sports/${sport}/leagues/${league}/teams/${teamId}/injuries`,
-  ];
-  for (const url of urls) {
-    try {
-      const r = await fetch(url, { headers: { Accept: "application/json" } });
-      if (!r.ok) continue;
-      const d = await r.json();
-      const raw = d?.injuries || d?.items || d?.athletes || [];
-      if (!raw.length) continue;
-      const injuries = raw.map(i => {
-        // ESPN injury objects vary -- handle both flat and nested
-        const ath = i?.athlete || i;
-        const name = ath?.displayName || ath?.shortName || "";
-        const status = i?.status || i?.type?.description || "";
-        const detail = i?.details?.detail || i?.longComment || i?.shortComment || "";
-        const pos = ath?.position?.abbreviation || "";
-        return name ? { name, status, detail, pos } : null;
-      }).filter(Boolean);
-      return res.json({ found: true, injuries, source: url });
-    } catch(e) { continue; }
+  try {
+    // Core API returns paginated items with $ref links
+    const url = `${CORE}/sports/${sport}/leagues/${league}/teams/${teamId}/injuries?limit=25`;
+    const r = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!r.ok) return res.json({ found: false, injuries: [], status: r.status });
+    const d = await r.json();
+
+    const rawItems = d?.items || [];
+    const injuries = [];
+
+    for (const item of rawItems) {
+      let injData = item;
+      // If just a $ref, fetch the full object
+      if (item?.$ref && !item?.athlete) {
+        try {
+          const ref = await fetch(item.$ref, { headers: { Accept: "application/json" } });
+          if (ref.ok) injData = await ref.json();
+        } catch {}
+      }
+      const ath = injData?.athlete || injData;
+      // Athlete may also be a $ref
+      let athData = ath;
+      if (ath?.$ref && !ath?.displayName) {
+        try {
+          const ref = await fetch(ath.$ref, { headers: { Accept: "application/json" } });
+          if (ref.ok) athData = await ref.json();
+        } catch {}
+      }
+      const name = athData?.displayName || athData?.shortName || "";
+      const pos  = athData?.position?.abbreviation || "";
+      const status = injData?.status || injData?.type?.description || "";
+      const detail = injData?.details?.detail || injData?.longComment || injData?.shortComment || "";
+      if (name) injuries.push({ name, pos, status, detail });
+    }
+
+    // Fallback: try site API if core returned nothing
+    if (!injuries.length) {
+      const r2 = await fetch(`${SITE}/sports/${sport}/${league}/teams/${teamId}/injuries`, { headers: { Accept: "application/json" } });
+      if (r2.ok) {
+        const d2 = await r2.json();
+        const raw2 = d2?.injuries || d2?.items || [];
+        for (const i of raw2) {
+          const ath = i?.athlete || i;
+          const name = ath?.displayName || ath?.shortName || "";
+          const status = i?.status || "";
+          const detail = i?.details?.detail || i?.longComment || "";
+          if (name) injuries.push({ name, status, detail, pos: ath?.position?.abbreviation || "" });
+        }
+      }
+    }
+
+    res.json({ found: true, injuries, count: d?.count || 0, rawCount: rawItems.length });
+  } catch(e) {
+    res.status(500).json({ error: e.message, found: false, injuries: [] });
   }
-  res.json({ found: false, injuries: [] });
 });
 
 
