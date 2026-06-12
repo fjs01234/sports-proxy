@@ -482,6 +482,43 @@ app.get("/injuries/:sport/:league/:teamId", async (req, res) => {
 });
 
 
+// Scrape MLB.com injury page for a team
+app.get("/mlbinjuries/:teamSlug", async (req, res) => {
+  const { teamSlug } = req.params;
+  try {
+    const url = `https://www.mlb.com/amp/news/${teamSlug}-injuries-and-roster-moves`;
+    const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html" } });
+    if (!r.ok) return res.json({ found: false, injuries: [] });
+    const html = await r.text();
+
+    const injuries = [];
+    // Parse each injury block: name, injury, status
+    // Pattern: position+name line, then Injury:, IL date:, Expected return:, Status:
+    const blocks = html.split(/\n(?=(?:RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s)/);
+    
+    for (const block of blocks) {
+      const nameLine = block.match(/^(RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+([^\n\[]+)/);
+      if (!nameLine) continue;
+      const pos  = nameLine[1].trim();
+      const name = nameLine[2].trim();
+      const injMatch   = block.match(/\*\*Injury:\*\*\s*([^\n]+)/);
+      const retMatch   = block.match(/\*\*Expected return:\*\*\s*([^\n]+)/);
+      const statMatch  = block.match(/\*\*Status:\*\*\s*([^\n*]+)/);
+      const injury = injMatch?.[1]?.trim() || "";
+      const ret    = retMatch?.[1]?.trim() || "TBD";
+      const status = statMatch?.[1]?.trim() || "";
+      if (name && injury) {
+        injuries.push({ name, pos, injury, expectedReturn: ret, status: status.slice(0, 150) });
+      }
+    }
+
+    res.json({ found: true, injuries, source: url });
+  } catch(e) {
+    res.status(500).json({ error: e.message, found: false, injuries: [] });
+  }
+});
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`proxy running on ${PORT}`));
 
