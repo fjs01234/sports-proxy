@@ -391,7 +391,15 @@ app.get("/boxdebug/:sport/:league/:teamId", async (req, res) => {
     const teams = sum?.boxscore?.teams || [];
     const debug = teams.map(t => ({
       abbr: t?.team?.abbreviation,
-      statKeys: (t?.statistics || []).map(s => ({ name: s.name, abbr: s.abbreviation, label: s.label, displayValue: s.displayValue, value: s.value }))
+      statGroups: (t?.statistics || []).map(s => ({
+        name: s.name,
+        keys: s.keys,
+        totals: s.totals,
+        firstAthlete: s.athletes?.[0] ? {
+          name: s.athletes[0]?.athlete?.displayName,
+          stats: s.athletes[0]?.stats
+        } : null
+      }))
     }));
     res.json({ gameId, teamsCount: teams.length, debug });
   } catch(e) { res.status(500).json({ error: e.message }); }
