@@ -365,6 +365,39 @@ app.get("/diag/:sport/:league/:teamId", async (req, res) => {
   res.json(results);
 });
 
+// Debug: dump raw boxscore.teams stat keys for a completed game
+app.get("/boxdebug/:sport/:league/:teamId", async (req, res) => {
+  const { sport, league, teamId } = req.params;
+  try {
+    const dates = [
+      (() => { const d=new Date(); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10).replace(/-/g,""); })(),
+      (() => { const d=new Date(); d.setDate(d.getDate()-2); return d.toISOString().slice(0,10).replace(/-/g,""); })(),
+    ];
+    let gameId = null;
+    for (const date of dates) {
+      const sb = await fetch(`${SITE}/sports/${sport}/${league}/scoreboard?dates=${date}`, { headers: { Accept: "application/json" } }).catch(()=>null);
+      if (!sb?.ok) continue;
+      const sbData = await sb.json();
+      for (const ev of (sbData?.events || [])) {
+        const comp = ev.competitions?.[0];
+        const involved = comp?.competitors?.some(c => String(c.team?.id) === String(teamId));
+        if (involved && ev.status?.type?.completed) { gameId = ev.id; break; }
+      }
+      if (gameId) break;
+    }
+    if (!gameId) return res.json({ error: "no completed game found" });
+    const sumRes = await fetch(`${SITE}/sports/${sport}/${league}/summary?event=${gameId}`, { headers: { Accept: "application/json" } });
+    const sum = await sumRes.json();
+    const teams = sum?.boxscore?.teams || [];
+    const debug = teams.map(t => ({
+      abbr: t?.team?.abbreviation,
+      statKeys: (t?.statistics || []).map(s => ({ name: s.name, abbr: s.abbreviation, label: s.label, displayValue: s.displayValue, value: s.value }))
+    }));
+    res.json({ gameId, teamsCount: teams.length, debug });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`proxy running on ${PORT}`));
 
