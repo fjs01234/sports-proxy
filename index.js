@@ -605,6 +605,26 @@ app.get("/mlbdebug", async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Raw HTML passthrough for MLB injury page
+app.get("/mlbraw/:teamSlug", async (req, res) => {
+  const { teamSlug } = req.params;
+  try {
+    const r = await fetch(`https://www.mlb.com/news/${teamSlug}-injuries-and-roster-moves`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.9",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.google.com/"
+      }
+    });
+    const html = await r.text();
+    res.setHeader("Content-Type", "text/html");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.send(html);
+  } catch(e) { res.status(500).send(""); }
+});
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`proxy running on ${PORT}`));
 
