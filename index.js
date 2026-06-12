@@ -536,26 +536,37 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
     // Extract boxscore
     const boxscore = sum?.boxscore || {};
 
-    // R/H/E: boxscore.teams[].statistics has groups like batting/fielding/records
-    // R comes from the "batting" group, E from "fielding"
+    // R/H/E: read from the home/away competitor scores + hits/errors from boxscore.teams statistics
+    // ESPN stores R as the competitor score; H and E are in boxscore.teams[].statistics
     const teamRHE = {};
+
+    // Get R directly from the scoreboard competitor scores we already have
+    const homeAbbr = comp?.competitors?.find(c => c.homeAway === "home")?.team?.abbreviation;
+    const awayAbbr = comp?.competitors?.find(c => c.homeAway === "away")?.team?.abbreviation;
+    const homeScore = comp?.competitors?.find(c => c.homeAway === "home")?.score;
+    const awayScore = comp?.competitors?.find(c => c.homeAway === "away")?.score;
+    if (homeAbbr) teamRHE[homeAbbr] = { R: homeScore ?? "?", H: "?", E: "0" };
+    if (awayAbbr) teamRHE[awayAbbr] = { R: awayScore ?? "?", H: "?", E: "0" };
+
+    // Get H and E from boxscore.teams[].statistics totals
     for (const tb of (boxscore?.teams || [])) {
       const abbr = tb?.team?.abbreviation || "";
-      let R = "?", H = "?", E = "0";
+      if (!teamRHE[abbr]) teamRHE[abbr] = { R: "?", H: "?", E: "0" };
       for (const grp of (tb?.statistics || [])) {
         const keys = grp?.keys || [];
-        const vals = grp?.totals || [];
+        // totals is a parallel array to keys with team aggregate values
+        const totals = grp?.totals || [];
+        if (!totals.length) continue;
         const statMap = {};
-        keys.forEach((k, i) => { if (vals[i]) statMap[k] = vals[i]; });
+        keys.forEach((k, i) => { if (totals[i] != null) statMap[k] = totals[i]; });
         if (grp.name === "batting") {
-          R = statMap["R"] ?? statMap["runs"] ?? R;
-          H = statMap["H"] ?? statMap["hits"] ?? H;
+          if (statMap["H"]) teamRHE[abbr].H = statMap["H"];
+          if (statMap["R"]) teamRHE[abbr].R = statMap["R"]; // override with actual runs
         }
         if (grp.name === "fielding") {
-          E = statMap["E"] ?? statMap["errors"] ?? E;
+          if (statMap["E"] != null) teamRHE[abbr].E = statMap["E"];
         }
       }
-      teamRHE[abbr] = { R, H, E };
     }
 
     // Athletes: boxscore.players[] keyed by team
