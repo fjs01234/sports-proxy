@@ -520,26 +520,24 @@ app.get("/mlbinjuries/:teamSlug", async (req, res) => {
     const transactions = [];
 
     // MLB.com stores content as JSON-encoded strings in __typename:Markdown blocks
-    // Each injury/transaction is a separate content block with \n as literal \\n
     const contentRe = /"__typename"\s*:\s*"Markdown"[^}]{0,50}"content"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
     const allBlocks = [];
     let cm;
     while ((cm = contentRe.exec(html)) !== null) {
-      try {
-        allBlocks.push(JSON.parse('"' + cm[1] + '"'));
-      } catch {
-        allBlocks.push(cm[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'));
-      }
+      let raw;
+      try { raw = JSON.parse('"' + cm[1] + '"'); }
+      catch { raw = cm[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'); }
+      // Strip HTML tags (forge-entity etc) but keep inner text
+      const clean = raw.replace(/<[^>]+>/g, '').replace(/[ \t]{2,}/g, ' ');
+      allBlocks.push(clean);
     }
 
-    // Find which blocks are in injury vs transaction section
     let inInjuries = false, inTransactions = false;
     const months = /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+$/;
     let txDate = '';
 
     for (const rawBlock of allBlocks) {
-      // Strip HTML tags like <forge-entity>...</forge-entity> but keep text content
-      const t = rawBlock.replace(/<[^>]+>/g, '').trim();
+      const t = rawBlock.trim();
       if (/LATEST INJURIES/i.test(t))     { inInjuries = true; inTransactions = false; continue; }
       if (/LATEST TRANSACTIONS/i.test(t)) { inInjuries = false; inTransactions = true; continue; }
       if (/More from MLB/i.test(t))        { inInjuries = false; inTransactions = false; continue; }
