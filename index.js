@@ -601,8 +601,9 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
             const hab = sm["hits-atBats"] || "";
             const hr  = sm["homeRuns"]; const rbi = sm["RBIs"]; const bb = sm["walks"];
             if (hab) {
-              let line = `${name}: ${hab}`;
-              if (hr && hr !== "0") line += `, ${hr} HR`;
+              const habReadable = hab.replace(/^(\d+)-(\d+)$/, "$1 for $2");
+              let line = `${name}: ${habReadable}`;
+              if (hr && hr !== "0") line += `, ${hr === "1" ? "HR" : hr + " HR"}`;
               if (rbi && rbi !== "0") line += `, ${rbi} RBI`;
               if (bb && bb !== "0") line += `, BB`;
               hitters.push({ name, line });
