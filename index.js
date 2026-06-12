@@ -482,65 +482,83 @@ app.get("/injuries/:sport/:league/:teamId", async (req, res) => {
 });
 
 
-// Scrape MLB.com injury page for a team
+// MLB injury page - fetch with browser-like headers
 app.get("/mlbinjuries/:teamSlug", async (req, res) => {
   const { teamSlug } = req.params;
   try {
-    const url = `https://www.mlb.com/amp/news/${teamSlug}-injuries-and-roster-moves`;
-    const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html" } });
-    if (!r.ok) return res.json({ found: false, injuries: [] });
+    const url = `https://www.mlb.com/news/${teamSlug}-injuries-and-roster-moves`;
+    const r = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Referer": "https://www.google.com/",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "cross-site"
+      }
+    });
+
+    if (!r.ok) return res.json({ found: false, injuries: [], transactions: [], status: r.status });
     const html = await r.text();
 
-    const injuries = [];
-
-    // Normalize: convert <strong> to ** so we have one format to parse
+    // Normalize HTML to text
     const normalized = html
       .replace(/<strong>/gi, '**').replace(/<\/strong>/gi, '**')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#x27;/g, "'")
-      .replace(/[ \t]{2,}/g, ' ')
-      .replace(/\n[ \t]+/g, '\n');
+      .replace(/<br[^>]*>/gi, ' ')
+      .replace(/<\/p>/gi, ' ').replace(/<\/li>/gi, ' ')
+      .replace(/<\/div>/gi, ' ')
+      .replace(/<[^>]+>/g, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&#x27;/g, "'").replace(/&nbsp;/g, ' ')
+      .replace(/[ 	]{2,}/g, ' ');
 
-    // Find the LATEST INJURIES section
-    const injSection = normalized.split(/LATEST INJURIES/i)[1] || normalized;
-    const endMarker  = injSection.search(/LATEST TRANSACTIONS/i);
-    const injText    = endMarker > 0 ? injSection.slice(0, endMarker) : injSection.slice(0, 8000);
-
-    // Split on position+name lines: "RHP Kodai Senga" at start of a segment
-    const segments = injText.split(/(?=\n(?:RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+[A-Z])/);
-
-    for (const seg of segments) {
-      const nameLine = seg.match(/^\n?(RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+([A-Za-z][A-Za-z .'-]+)/);
-      if (!nameLine) continue;
-      const pos  = nameLine[1].trim();
-      const name = nameLine[2].trim().replace(/\s+$/, '');
-      const injMatch = seg.match(/\*\*Injury:\*\*\s*([^\n*]{4,100})/i) || seg.match(/Injury:\s*([^\n*]{4,100})/i);
-      const retMatch = seg.match(/\*\*Expected return:\*\*\s*([^\n*]{2,50})/i) || seg.match(/Expected return:\s*([^\n*]{2,50})/i);
-      const injury = injMatch?.[1]?.trim().replace(/\*+$/, '') || "";
-      const ret    = retMatch?.[1]?.trim().replace(/\*+$/, '') || "TBD";
-      if (name && injury) {
-        injuries.push({ name, pos, injury, expectedReturn: ret });
-      }
-    }
-
-    // Parse latest transactions
+    const injuries = [];
     const transactions = [];
-    // Parse transactions using normalized text
-    const txRaw  = normalized.split(/LATEST TRANSACTIONS/i)[1] || '';
-    const txDateBlocks = txRaw.split(/(?=\n(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d)/);
-    for (const block of txDateBlocks.slice(0, 4)) {
-      const dateMatch = block.match(/((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+)/);
-      if (!dateMatch) continue;
-      const date = dateMatch[1].trim();
-      // Bullet lines with roster moves
-      const lines = block.split('\n').filter(l => /[•·]/.test(l) || /:\s*(Recalled|Optioned|Activated|Placed|Designated|Transferred|Selected|Released)/i.test(l));
-      for (const line of lines) {
-        const clean = line.replace(/^[•·\s]+/, '').replace(/\*+/g, '').replace(/\[([^\]]+)\][^)]*\)/g, '$1').trim();
-        if (clean.length > 5) transactions.push({ date, move: clean });
+
+    // Find injury section
+    const injStart = normalized.search(/LATEST INJURIES/i);
+    const txStart  = normalized.search(/LATEST TRANSACTIONS/i);
+    const injText  = injStart >= 0
+      ? normalized.slice(injStart, txStart > injStart ? txStart : injStart + 6000)
+      : '';
+
+    // Parse injury blocks -- each starts with a position abbreviation + name
+    const injLines = injText.split('\n').map(l => l.trim()).filter(Boolean);
+    let current = null;
+    for (const line of injLines) {
+      const posName = line.match(/^(RHP|LHP|SP|RP|C|1B|2B|3B|SS|OF|IF|DH|INF)\s+(.+)/);
+      if (posName) {
+        if (current?.name && current?.injury) injuries.push(current);
+        current = { pos: posName[1], name: posName[2].trim(), injury: '', expectedReturn: 'TBD' };
+        continue;
+      }
+      if (!current) continue;
+      const injM = line.match(/\*\*Injury:\*\*\s*(.+)/i) || line.match(/^Injury:\s*(.+)/i);
+      const retM = line.match(/\*\*Expected return:\*\*\s*(.+)/i) || line.match(/^Expected return:\s*(.+)/i);
+      if (injM) current.injury = injM[1].replace(/\*+/g,'').trim();
+      if (retM) current.expectedReturn = retM[1].replace(/\*+/g,'').trim();
+    }
+    if (current?.name && current?.injury) injuries.push(current);
+
+    // Parse transactions
+    const txText = txStart >= 0 ? normalized.slice(txStart, txStart + 3000) : '';
+    const txLines = txText.split('\n').map(l => l.trim()).filter(Boolean);
+    let currentDate = '';
+    for (const line of txLines) {
+      const dateM = line.match(/^\*\*((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+)\*\*$/)
+                 || line.match(/^((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+)$/);
+      if (dateM) { currentDate = dateM[1]; continue; }
+      if (currentDate && (line.startsWith('•') || line.startsWith('-') || /^[A-Z]{1,3}\s/.test(line))) {
+        const clean = line.replace(/^[•\-\s]+/, '').replace(/\*+/g, '').trim();
+        if (clean.length > 5) transactions.push({ date: currentDate, move: clean });
       }
     }
 
-    res.json({ found: true, injuries, transactions, source: url });
+    res.json({ found: true, injuries, transactions });
   } catch(e) {
     res.status(500).json({ error: e.message, found: false, injuries: [], transactions: [] });
   }
