@@ -533,6 +533,16 @@ app.get("/mlbinjuries/:teamSlug", async (req, res) => {
 });
 
 
+// Debug: show raw MLB injury page
+app.get("/mlbdebug", async (req, res) => {
+  try {
+    const r = await fetch("https://www.mlb.com/amp/news/mets-injuries-and-roster-moves", { headers: { "User-Agent": "Mozilla/5.0", "Accept": "text/html" } });
+    const html = await r.text();
+    // Return first 3000 chars to inspect format
+    res.json({ status: r.status, preview: html.slice(0, 3000), hasInjuries: html.includes("LATEST INJURIES"), hasBold: html.includes("**Injury:**"), hasStrong: html.includes("<strong>Injury:") });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`proxy running on ${PORT}`));
 
