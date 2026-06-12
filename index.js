@@ -300,7 +300,7 @@ app.get("/players/:sport/:league/:teamId", async (req, res) => {
 app.get("/news/:sport/:league/:teamId", async (req, res) => {
   const { sport, league, teamId } = req.params;
   try {
-    const r = await fetch(`${SITE}/sports/${sport}/${league}/news?team=${teamId}&limit=10`, { headers: { Accept: "application/json" } });
+    const r = await fetch(`${SITE}/sports/${sport}/${league}/news?team=${teamId}&limit=20`, { headers: { Accept: "application/json" } });
     const data = await r.json();
     // Enrich articles with parsed published date and type info, pass through fully
     const articles = (data.articles || []).map(a => ({
