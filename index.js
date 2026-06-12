@@ -513,6 +513,303 @@ app.get("/lastsummary/:sport/:league/:teamId", async (req, res) => {
 app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
   const { sport, league, teamId } = req.params;
   try {
+    const dates = [
+      null,
+      (() => { const d=new Date(); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10).replace(/-/g,""); })(),
+      (() => { const d=new Date(); d.setDate(d.getDate()-2); return d.toISOString().slice(0,10).replace(/-/g,""); })(),
+      (() => { const d=new Date(); d.setDate(d.getDate()-3); return d.toISOString().slice(0,10).replace(/-/g,""); })(),
+    ];
+
+    let gameId = null, gameEvent = null;
+    for (const date of dates) {
+      const url = date
+        ? `${SITE}/sports/${sport}/${league}/scoreboard?dates=${date}`
+        : `${SITE}/sports/${sport}/${league}/scoreboard`;
+      const sb = await fetch(url, { headers: { Accept: "application/json" } }).catch(()=>null);
+      if (!sb?.ok) continue;
+      const sbData = await sb.json();
+      for (const ev of (sbData?.events || [])) {
+        const comp = ev.competitions?.[0];
+        const involved = comp?.competitors?.some(c => String(c.team?.id) === String(teamId));
+        if (involved && ev.status?.type?.completed) { gameId = ev.id; gameEvent = ev; break; }
+      }
+      if (gameId) break;
+    }
+    if (!gameId) return res.json({ found: false });
+
+    const sumRes = await fetch(`${SITE}/sports/${sport}/${league}/summary?event=${gameId}`, { headers: { Accept: "application/json" } });
+    const sum = await sumRes.json();
+    const boxscore = sum?.boxscore || {};
+    const players  = boxscore?.players || [];
+
+    // R/H/E from linescore
+    const teamRHE = {};
+    const lsTeams = sum?.linescore?.teams || [];
+    for (const lt of lsTeams) {
+      const abbr = lt?.team?.abbreviation || "";
+      if (abbr) teamRHE[abbr] = { R: lt?.runs ?? "?", H: lt?.hits ?? "?", E: lt?.errors ?? "0" };
+    }
+    // Fallback R from competitor scores
+    const compObj = gameEvent?.competitions?.[0];
+    for (const competitor of (compObj?.competitors || [])) {
+      const abbr = competitor?.team?.abbreviation || "";
+      if (!abbr) continue;
+      if (!teamRHE[abbr]) teamRHE[abbr] = { R: competitor.score ?? "?", H: "?", E: "0" };
+      else if (teamRHE[abbr].R === "?") teamRHE[abbr].R = competitor.score ?? "?";
+    }
+
+    // Parse batting and pitching from boxscore.players[]
+    const teamStats = [];
+    for (const teamBlock of players) {
+      const tName = teamBlock?.team?.displayName || "";
+      const tAbbr = teamBlock?.team?.abbreviation || "";
+      const isNYM = tAbbr === "NYM" || String(teamBlock?.team?.id) === String(teamId);
+      const hitters = [], pitchers = [];
+
+      for (const statGroup of (teamBlock?.statistics || [])) {
+        const type = (statGroup?.name || "").toLowerCase();
+        const keys = statGroup?.keys || [];
+        for (const ath of (statGroup?.athletes || [])) {
+          const name = ath?.athlete?.displayName || "";
+          const vals = ath?.stats || [];
+          if (!name || !vals.length) continue;
+          const sm = {};
+          keys.forEach((k, i) => { if (vals[i] != null && vals[i] !== "--") sm[k] = vals[i]; });
+
+          if (type === "batting") {
+            const hab = sm["hits-atBats"] || "";
+            const ab  = sm["atBats"]; const h = sm["hits"];
+            const hr  = sm["homeRuns"]; const rbi = sm["RBIs"]; const bb = sm["walks"];
+            if (hab || ab != null) {
+              let line = `${name}: ${hab || h+"-"+ab}`;
+              if (hr && hr !== "0") line += `, ${hr} HR`;
+              if (rbi && rbi !== "0") line += `, ${rbi} RBI`;
+              if (bb && bb !== "0") line += `, BB`;
+              hitters.push({ name, line });
+            }
+          } else if (type === "pitching") {
+            const ip = sm["fullInnings.partInnings"];
+            const er = sm["earnedRuns"]; const so = sm["strikeouts"];
+            const bb = sm["walks"]; const era = sm["ERA"];
+            const dec = ath?.athlete?.note || "";
+            if (ip) {
+              let line = `${name}: ${ip} IP`;
+              if (er != null) line += `, ${er} ER`;
+              if (so && so !== "0") line += `, ${so} K`;
+              if (bb && bb !== "0") line += `, ${bb} BB`;
+              if (era) line += ` (ERA: ${era})`;
+              if (dec) line += ` [${dec}]`;
+              pitchers.push({ name, line });
+            }
+          }
+        }
+
+        // Sum H from batting athletes if linescore missing
+        if (type === "batting" && teamRHE[tAbbr]?.H === "?") {
+          const hIdx = keys.indexOf("hits");
+          if (hIdx >= 0) {
+            let totalH = 0;
+            for (const ath of (statGroup.athletes || [])) {
+              const v = parseInt(ath?.stats?.[hIdx]);
+              if (!isNaN(v)) totalH += v;
+            }
+            if (totalH > 0) teamRHE[tAbbr].H = String(totalH);
+          }
+        }
+      }
+
+      const rhe = teamRHE[tAbbr] || { R:"?", H:"?", E:"0" };
+      teamStats.push({ tName, tAbbr, isNYM, hitters, pitchers, R: rhe.R, H: rhe.H, E: rhe.E });
+    }
+
+    // If NYM pitchers still empty, try boxscore leaders
+    const nym = teamStats.find(t => t.isNYM);
+    if (nym && !nym.pitchers.length) {
+      for (const leader of (boxscore?.leaders || [])) {
+        for (const entry of (leader?.leaders || [])) {
+          const athTeam = entry?.athlete?.team?.abbreviation;
+          if (athTeam !== "NYM") continue;
+          const name = entry?.athlete?.displayName || "";
+          const val  = entry?.displayValue || "";
+          if (name && val) nym.pitchers.push({ name, line: `${name}: ${val}` });
+        }
+      }
+    }
+
+    // Scoring plays
+    const scoringPlays = (sum?.plays || [])
+      .filter(p => p?.scoringPlay)
+      .slice(0, 8)
+      .map(p => ({ text: p?.text || "", score: p?.homeScore !== undefined ? `${p.awayScore}-${p.homeScore}` : "" }));
+
+    const home = compObj?.competitors?.find(c => c.homeAway === "home");
+    const away = compObj?.competitors?.find(c => c.homeAway === "away");
+
+    res.json({
+      found: true, gameId,
+      home: { name: home?.team?.displayName, abbr: home?.team?.abbreviation, score: home?.score },
+      away: { name: away?.team?.displayName, abbr: away?.team?.abbreviation, score: away?.score },
+      venue: compObj?.venue?.fullName || "",
+      attendance: compObj?.attendance || "",
+      gameDate: gameEvent?.date || "",
+      teamStats, scoringPlays,
+      status: gameEvent?.status?.type?.description || "Final",
+      _linescoreTeams: lsTeams.map(t => ({ abbr: t?.team?.abbreviation, R: t?.runs, H: t?.hits, E: t?.errors }))
+    });
+
+  } catch(e) {
+    res.status(500).json({ error: e.message, found: false });
+  }
+});
+
+
+app.get("/boxdebug/:sport/:league/:teamId", async (req, res) => {
+  const { sport, league, teamId } = req.params;
+  try {
+    const dates = [
+      (() => { const d=new Date(); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10).replace(/-/g,""); })(),
+      (() => { const d=new Date(); d.setDate(d.getDate()-2); return d.toISOString().slice(0,10).replace(/-/g,""); })(),
+    ];
+    let gameId = null;
+    for (const date of dates) {
+      const sb = await fetch(`${SITE}/sports/${sport}/${league}/scoreboard?dates=${date}`, { headers: { Accept: "application/json" } }).catch(()=>null);
+      if (!sb?.ok) continue;
+      const sbData = await sb.json();
+      for (const ev of (sbData?.events || [])) {
+        const comp = ev.competitions?.[0];
+        const involved = comp?.competitors?.some(c => String(c.team?.id) === String(teamId));
+        if (involved && ev.status?.type?.completed) { gameId = ev.id; break; }
+      }
+      if (gameId) break;
+    }
+    if (!gameId) return res.json({ error: "no completed game found" });
+    const sumRes = await fetch(`${SITE}/sports/${sport}/${league}/summary?event=${gameId}`, { headers: { Accept: "application/json" } });
+    const sum = await sumRes.json();
+    const teams = sum?.boxscore?.teams || [];
+    // Show players[] structure - where actual athlete data lives
+    const players = sum?.boxscore?.players || [];
+    const debug = players.map(t => ({
+      abbr: t?.team?.abbreviation,
+      statGroups: (t?.statistics || []).map(s => ({
+        name: s.name,
+        keys: s.keys?.slice(0,10),
+        firstAthlete: s.athletes?.[0] ? {
+          name: s.athletes[0]?.athlete?.displayName,
+          stats: s.athletes[0]?.stats?.slice(0,10)
+        } : null,
+        lastAthlete: s.athletes?.length > 1 ? {
+          name: s.athletes[s.athletes.length-1]?.athlete?.displayName,
+          stats: s.athletes[s.athletes.length-1]?.stats?.slice(0,10)
+        } : null
+      }))
+    }));
+    res.json({ gameId, teamsCount: teams.length, playersCount: players.length, debug });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`proxy running on ${PORT}`));
+
+// TEMP: expose raw v3 leaders and v2stats for one team so we can see full structure
+app.get("/rawcheck/:sport/:league/:teamId", async (req, res) => {
+  const { sport, league, teamId } = req.params;
+  const results = {};
+  
+  // v3 leaders - show first 2 leader entries fully
+  try {
+    const r = await fetch(`https://site.api.espn.com/apis/site/v3/sports/${sport}/${league}/leaders`, { headers: {Accept:"application/json"} });
+    const d = await r.json();
+    const leaders = d?.leaders || [];
+    results.v3_total_cats = leaders.length;
+    results.v3_first_cat = leaders[0] ? {
+      name: leaders[0].displayName || leaders[0].name,
+      entryCount: (leaders[0].leaders||[]).length,
+      firstEntry: JSON.stringify(leaders[0].leaders?.[0]).slice(0,400),
+      secondEntry: JSON.stringify(leaders[0].leaders?.[1]).slice(0,400),
+    } : null;
+    // Search all entries for our team
+    let found = 0;
+    for (const cat of leaders) {
+      for (const e of (cat.leaders||[])) {
+        const tid = String(e.team?.id || e.athlete?.team?.id || "");
+        if (tid === String(teamId)) found++;
+      }
+    }
+    results.v3_entries_matching_team = found;
+  } catch(e) { results.v3_error = e.message; }
+
+  // v2stats - show full results structure  
+  try {
+    const r = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/teams/${teamId}/statistics`, { headers: {Accept:"application/json"} });
+    const d = await r.json();
+    results.v2_topKeys = Object.keys(d);
+    results.v2_results_keys = d.results ? Object.keys(d.results) : null;
+    results.v2_results_stats_keys = d.results?.stats ? Object.keys(d.results.stats) : null;
+    results.v2_splits_path = JSON.stringify(d.results?.stats?.splits || d.results?.splits || d.splits || "none").slice(0,500);
+  } catch(e) { results.v2_error = e.message; }
+  
+  res.json(results);
+});
+
+// Game summary / highlights for a team's last COMPLETED game
+app.get("/lastsummary/:sport/:league/:teamId", async (req, res) => {
+  const { sport, league, teamId } = req.params;
+  try {
+    // Try current scoreboard first, then yesterday's
+    const dates = [null, (() => { const d=new Date(); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10).replace(/-/g,""); })(), (() => { const d=new Date(); d.setDate(d.getDate()-2); return d.toISOString().slice(0,10).replace(/-/g,""); })()];
+    
+    let gameId = null;
+    let foundEvent = null;
+
+    for (const date of dates) {
+      const url = date
+        ? `${SITE}/sports/${sport}/${league}/scoreboard?dates=${date}`
+        : `${SITE}/sports/${sport}/${league}/scoreboard`;
+      const sb = await fetch(url, { headers: { Accept: "application/json" } }).catch(()=>null);
+      if (!sb?.ok) continue;
+      const sbData = await sb.json();
+      
+      for (const ev of (sbData?.events || [])) {
+        const comp = ev.competitions?.[0];
+        const involved = comp?.competitors?.some(c => String(c.team?.id) === String(teamId));
+        if (!involved) continue;
+        const completed = ev.status?.type?.completed;
+        if (completed) { gameId = ev.id; foundEvent = ev; break; }
+      }
+      if (gameId) break;
+    }
+
+    if (!gameId) return res.json({ highlights: [], keyMoments: [], status: "no_completed_game" });
+
+    // Fetch game summary
+    const sum = await fetch(`${SITE}/sports/${sport}/${league}/summary?event=${gameId}`, { headers: { Accept: "application/json" } });
+    const sumData = await sum.json();
+
+    // Try keyMoments / story first (ESPN's curated highlights)
+    const keyMoments = (sumData?.keyMoments || sumData?.story || [])
+      .slice(0, 5)
+      .map(m => m?.text || m?.description || m?.headline || "")
+      .filter(Boolean);
+
+    // Fallback: scoring plays from play-by-play
+    const highlights = [];
+    for (const play of (sumData?.plays || [])) {
+      if (!play?.scoringPlay && !play?.text?.match(/touchdown|home run|goal|score|three|slam|dunk/i)) continue;
+      const text = play?.text || play?.alternativeText || "";
+      if (text && highlights.length < 5) highlights.push({ text, score: play?.homeScore !== undefined ? `${play.homeScore}–${play.awayScore}` : null });
+    }
+
+    res.json({ highlights, keyMoments, status: "final", gameId });
+  } catch (e) {
+    res.status(500).json({ error: e.message, highlights: [], keyMoments: [] });
+  }
+});
+
+// Full game boxscore + leaders for last completed game
+app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
+  const { sport, league, teamId } = req.params;
+  try {
     // Find last completed game for this team
     const dates = [
       null,
@@ -549,36 +846,32 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
     // Extract boxscore
     const boxscore = sum?.boxscore || {};
 
-    // R = competitor score; H and E come from the last row of boxscore.players batting/fielding
-    // ESPN puts team totals as the LAST athlete entry in each stat group (name = team name)
+    // R/H/E from ESPN linescore (most reliable source)
     const teamRHE = {};
+    const linescore = sum?.linescore || {};
+    const linescoreTeams = linescore?.teams || [];
 
-    // Seed R from competitor scores
+    if (linescoreTeams.length >= 2) {
+      for (const lt of linescoreTeams) {
+        const abbr = lt?.team?.abbreviation || lt?.abbr || "";
+        if (abbr) {
+          teamRHE[abbr] = {
+            R: lt?.runs ?? lt?.score ?? "?",
+            H: lt?.hits ?? "?",
+            E: lt?.errors ?? "0"
+          };
+        }
+      }
+    }
+
+    // Fallback: seed R from competitor scores if linescore missing
     const compForRHE = gameEvent?.competitions?.[0];
     for (const competitor of (compForRHE?.competitors || [])) {
       const abbr = competitor?.team?.abbreviation;
-      if (abbr) teamRHE[abbr] = { R: competitor.score ?? "?", H: "?", E: "0" };
-    }
-
-    // Get H and E from boxscore.players -- last athlete in batting group is team totals
-    for (const teamBlock of (boxscore?.players || [])) {
-      const abbr = teamBlock?.team?.abbreviation || "";
-      if (!teamRHE[abbr]) teamRHE[abbr] = { R: "?", H: "?", E: "0" };
-      for (const grp of (teamBlock?.statistics || [])) {
-        const keys = grp?.keys || [];
-        const athletes = grp?.athletes || [];
-        if (!athletes.length || !keys.length) continue;
-        // Last athlete row is often the team totals
-        const totalsRow = athletes[athletes.length - 1];
-        const vals = totalsRow?.stats || [];
-        const statMap = {};
-        keys.forEach((k, i) => { if (vals[i] != null && vals[i] !== "--") statMap[k] = vals[i]; });
-        if (grp.name === "batting") {
-          if (statMap["H"]) teamRHE[abbr].H = statMap["H"];
-        }
-        if (grp.name === "fielding") {
-          if (statMap["E"] != null) teamRHE[abbr].E = statMap["E"];
-        }
+      if (abbr && !teamRHE[abbr]) {
+        teamRHE[abbr] = { R: competitor.score ?? "?", H: "?", E: "0" };
+      } else if (abbr && teamRHE[abbr].R === "?") {
+        teamRHE[abbr].R = competitor.score ?? "?";
       }
     }
 
@@ -671,6 +964,30 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
       teamStats.push({ tName, tAbbr, isNYM, hitters, pitchers, R: finalRhe.R, H: finalRhe.H, E: finalRhe.E });
     }
 
+    // Pitching fallback: if players[] empty, use sum.leaders for NYM pitchers
+    const nymTeamStats = teamStats.find(t => t.isNYM);
+    if (nymTeamStats && !nymTeamStats.pitchers.length) {
+      const pitchingLeaders = (sum?.leaders || []).find(l => (l.name||l.displayName||"").toLowerCase().includes("pitch") || (l.abbreviation||"").toLowerCase() === "era");
+      if (!pitchingLeaders) {
+        // Try boxscore leaders
+        const boxLeaders = sum?.boxscore?.leaders || [];
+        for (const leader of boxLeaders) {
+          if (!(leader.name||"").toLowerCase().includes("pitch")) continue;
+          for (const entry of (leader.leaders || [])) {
+            const athTeam = entry.athlete?.team?.abbreviation || entry.team?.abbreviation;
+            if (athTeam !== "NYM") continue;
+            const name = entry.athlete?.displayName || "";
+            const val = entry.displayValue || "";
+            if (name) nymTeamStats.pitchers.push({ name, line: `${name}: ${val}` });
+          }
+        }
+      }
+    }
+
+    // dummy close to replace the real one below
+    if (false) {
+    }
+
     // Key moments and scoring plays
     const keyMoments = (sum?.keyMoments || sum?.story || [])
       .slice(0, 5).map(m => m?.text || m?.description || "").filter(Boolean);
@@ -696,7 +1013,7 @@ app.get("/gamedetail/:sport/:league/:teamId", async (req, res) => {
       venue, attendance, gameDate,
       teamStats, keyMoments, scoringPlays,
       status: gameEvent?.status?.type?.description || "Final",
-      _debug: { playersCount: players.length, firstPlayerTeam: players[0]?.team?.abbreviation, firstPlayerStatGroups: players[0]?.statistics?.map(s=>({name:s.name, athleteCount:s.athletes?.length, keys:s.keys?.slice(0,5), firstStats:s.athletes?.[0]?.stats?.slice(0,5)})) }
+      _linescoreTeams: linescoreTeams.map(t => ({ abbr: t?.team?.abbreviation || t?.abbr, R: t?.runs ?? t?.score, H: t?.hits, E: t?.errors, keys: Object.keys(t || {}) }))
     });
 
   } catch(e) {
